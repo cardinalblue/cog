@@ -110,7 +110,7 @@ def create_app(
         response_model=PredictionResponse,
         response_model_exclude_unset=True,
     )
-    def predict(request: PredictionRequest = Body(default=None), prefer: Union[str, None] = Header(default=None)) -> Any:  # type: ignore
+    def predict(request: PredictionRequest = Body(default=None)) -> Any:  # type: ignore
         """
         Run a single prediction on the model
         """
@@ -120,7 +120,8 @@ def create_app(
             )
 
         # TODO: spec-compliant parsing of Prefer header.
-        respond_async = prefer == "respond-async"
+        # respond_async = prefer == "respond-async"
+        respond_async = False
 
         return _predict(request=request, respond_async=respond_async)
 
