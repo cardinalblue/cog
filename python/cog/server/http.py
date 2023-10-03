@@ -70,9 +70,7 @@ def create_app(
     OutputType = get_output_type(predictor)
 
     PredictionRequest = schema.PredictionRequest.with_types(input_type=InputType)
-    PredictionResponse = schema.PredictionResponse.with_types(
-        input_type=InputType, output_type=OutputType
-    )
+    PredictionResponse = schema.PredictionResponse.with_types(output_type=OutputType)
 
     @app.on_event("startup")
     def startup() -> None:
