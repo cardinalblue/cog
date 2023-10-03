@@ -6,15 +6,7 @@ import os.path
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Type,
-    Union,
-)
+from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 try:
     from typing import get_args, get_origin
@@ -24,23 +16,17 @@ except ImportError:  # Python < 3.8
 import yaml
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
-
 # Added in Python 3.9. Can be from typing if we drop support for <3.9
 from typing_extensions import Annotated
 
 from .errors import ConfigDoesNotExist, PredictorNotSet
-from .types import (
-    File as CogFile,
-)
-from .types import (
-    Input,
-    URLPath,
-)
-from .types import (
-    Path as CogPath,
-)
+from .types import File as CogFile
+from .types import Input
+from .types import Path as CogPath
+from .types import URLPath
 
-ALLOWED_INPUT_TYPES = [str, int, float, bool, CogFile, CogPath]
+ALLOWED_INPUT_TYPES = [str, int, float, bool]
+NOT_ALLOWED_INPUT_TYPES = [CogFile, CogPath]
 
 
 class BasePredictor(ABC):
@@ -235,7 +221,7 @@ def get_input_type(predictor: BasePredictor) -> Type[BaseInput]:
             raise TypeError(
                 f"No input type provided for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}."
             )
-        elif InputType not in ALLOWED_INPUT_TYPES:
+        elif InputType in NOT_ALLOWED_INPUT_TYPES:
             raise TypeError(
                 f"Unsupported input type {human_readable_type_name(InputType)} for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}."
             )
