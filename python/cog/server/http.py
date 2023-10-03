@@ -24,13 +24,8 @@ from .. import schema
 from ..files import upload_file
 from ..json import upload_files
 from ..logging import setup_logging
-from ..predictor import (
-    get_input_type,
-    get_output_type,
-    get_predictor_ref,
-    load_config,
-    load_predictor_from_ref,
-)
+from ..predictor import (get_input_type, get_output_type, get_predictor_ref,
+                         load_config, load_predictor_from_ref)
 from .runner import PredictionRunner, RunnerBusyError, UnknownPredictionError
 
 log = structlog.get_logger("cog.server.http")
@@ -131,40 +126,6 @@ def create_app(
 
         return _predict(request=request, respond_async=respond_async)
 
-    @app.put(
-        "/predictions/{prediction_id}",
-        response_model=PredictionResponse,
-        response_model_exclude_unset=True,
-    )
-    def predict_idempotent(
-        prediction_id: str = Path(..., title="Prediction ID"),
-        request: PredictionRequest = Body(..., title="Prediction Request"),
-        prefer: Union[str, None] = Header(default=None),
-    ) -> Any:
-        """
-        Run a single prediction on the model (idempotent creation).
-        """
-        if request.id is not None and request.id != prediction_id:
-            raise RequestValidationError(
-                [
-                    ErrorWrapper(
-                        ValueError(
-                            "prediction ID must match the ID supplied in the URL"
-                        ),
-                        ("body", "id"),
-                    )
-                ]
-            )
-
-        # We've already checked that the IDs match, now ensure that an ID is
-        # set on the prediction object
-        request.id = prediction_id
-
-        # TODO: spec-compliant parsing of Prefer header.
-        respond_async = prefer == "respond-async"
-
-        return _predict(request=request, respond_async=respond_async)
-
     def _predict(
         *, request: PredictionRequest, respond_async: bool = False
     ) -> Response:
@@ -208,27 +169,6 @@ def create_app(
         # FIXME: clean up output files
         encoded_response = jsonable_encoder(response_object)
         return JSONResponse(content=encoded_response)
-
-    @app.post("/predictions/{prediction_id}/cancel")
-    def cancel(prediction_id: str = Path(..., title="Prediction ID")) -> Any:
-        """
-        Cancel a running prediction
-        """
-        if not runner.is_busy():
-            return JSONResponse({}, status_code=404)
-        try:
-            runner.cancel(prediction_id)
-        except UnknownPredictionError:
-            return JSONResponse({}, status_code=404)
-        else:
-            return JSONResponse({}, status_code=200)
-
-    @app.post("/shutdown")
-    def start_shutdown() -> Any:
-        log.info("shutdown requested via http")
-        if shutdown_event is not None:
-            shutdown_event.set()
-        return JSONResponse({}, status_code=200)
 
     def _check_setup_result() -> Any:
         if app.state.setup_result is None:
