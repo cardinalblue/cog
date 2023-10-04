@@ -23,10 +23,10 @@ from .errors import ConfigDoesNotExist, PredictorNotSet
 from .types import File as CogFile
 from .types import Input
 from .types import Path as CogPath
-from .types import URLPath
+from .types import URLFile, URLPath
 
 ALLOWED_INPUT_TYPES = [str, int, float, bool]
-NOT_ALLOWED_INPUT_TYPES = [CogFile, CogPath]
+NOT_ALLOWED_INPUT_TYPES = [CogFile, CogPath, URLPath, URLFile]
 
 
 class BasePredictor(ABC):
