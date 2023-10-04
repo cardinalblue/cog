@@ -36,6 +36,28 @@ class PredictionBaseModel(pydantic.BaseModel, extra=pydantic.Extra.allow):
 
 
 class PredictionRequest(PredictionBaseModel):
+    id: t.Optional[str]
+    created_at: t.Optional[datetime]
+
+    # TODO: deprecate this
+    output_file_prefix: t.Optional[str]
+
+    webhook: t.Optional[pydantic.AnyHttpUrl]
+    webhook_events_filter: t.Optional[
+        t.List[WebhookEvent]
+    ] = WebhookEvent.default_events()
+
+    @classmethod
+    def with_types(cls, input_type: t.Type) -> t.Any:
+        # [compat] Input is implicitly optional -- previous versions of the
+        # Cog HTTP API allowed input to be omitted (e.g. for models that don't
+        # have any inputs). We should consider changing this in future.
+        return pydantic.create_model(
+            cls.__name__, __base__=cls, input=(input_type, ...)
+        )
+
+
+class NewPredictionRequest(PredictionBaseModel):
     instances: t.List[t.Any]
 
     @classmethod
@@ -49,6 +71,34 @@ class PredictionRequest(PredictionBaseModel):
 
 
 class PredictionResponse(PredictionBaseModel):
+    output: t.Any
+
+    id: t.Optional[str]
+    version: t.Optional[str]
+
+    created_at: t.Optional[datetime]
+    started_at: t.Optional[datetime]
+    completed_at: t.Optional[datetime]
+
+    logs: str = ""
+    error: t.Optional[str]
+    status: t.Optional[Status]
+
+    metrics: t.Optional[t.Dict[str, t.Any]]
+
+    @classmethod
+    def with_types(cls, output_type: t.Type) -> t.Any:
+        # [compat] Input is implicitly optional -- previous versions of the
+        # Cog HTTP API allowed input to be omitted (e.g. for models that don't
+        # have any inputs). We should consider changing this in future.
+        return pydantic.create_model(
+            cls.__name__,
+            __base__=cls,
+            output=(output_type, None)
+        )
+
+
+class NewPredictionResponse(PredictionBaseModel):
     predictions: t.List[t.Any]
 
     @classmethod

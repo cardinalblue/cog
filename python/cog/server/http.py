@@ -69,8 +69,8 @@ def create_app(
     InputType = get_input_type(predictor)
     OutputType = get_output_type(predictor)
 
-    PredictionRequest = schema.PredictionRequest.with_types(input_type=InputType)
-    PredictionResponse = schema.PredictionResponse.with_types(output_type=OutputType)
+    NewPredictionRequest = schema.NewPredictionRequest.with_types(input_type=InputType)
+    NewPredictionResponse = schema.NewPredictionResponse.with_types(output_type=OutputType)
 
     @app.on_event("startup")
     def startup() -> None:
@@ -107,10 +107,10 @@ def create_app(
 
     @app.post(
         "/predictions",
-        response_model=PredictionResponse,
+        response_model=NewPredictionResponse,
         response_model_exclude_unset=True,
     )
-    def predict(request: PredictionRequest = Body(default=None)) -> Any:  # type: ignore
+    def predict(request: NewPredictionRequest = Body(default=None)) -> Any:  # type: ignore
         """
         Run a single prediction on the model
         """
@@ -126,44 +126,45 @@ def create_app(
         return _predict(request=request, respond_async=respond_async)
 
     def _predict(
-        *, request: PredictionRequest, respond_async: bool = False
+        *, request: NewPredictionRequest, respond_async: bool = False
     ) -> Response:
         # [compat] If no body is supplied, assume that this model can be run
         # with empty input. This will throw a ValidationError if that's not
         # possible.
-        if request is None:
-            request = PredictionRequest(input={})
+        # if request is None:
+        #     request = PredictionRequest(input={})
         # [compat] If body is supplied but input is None, set it to an empty
         # dictionary so that later code can be simpler.
-        if request.input is None:
-            request.input = {}
+        # if request.input is None:
+        #     request.input = {}
+        all_results = []
+        for instance in request.instances:
+            instance_request = schema.PredictionRequest(input=instance)
+            try:
+                # For now, we only ask PredictionRunner to handle file uploads for
+                # async predictions. This is unfortunate but required to ensure
+                # backwards-compatible behaviour for synchronous predictions.
+                initial_response, async_result = runner.predict(
+                    instance_request, upload=respond_async
+                )
+                instance_response = async_result.get().dict()['output']
+                all_results.append(instance_response)
+            except RunnerBusyError:
+                return JSONResponse(
+                    {"detail": "Already running a prediction"}, status_code=409
+                )
 
         try:
-            # For now, we only ask PredictionRunner to handle file uploads for
-            # async predictions. This is unfortunate but required to ensure
-            # backwards-compatible behaviour for synchronous predictions.
-            initial_response, async_result = runner.predict(
-                request, upload=respond_async
-            )
-        except RunnerBusyError:
-            return JSONResponse(
-                {"detail": "Already running a prediction"}, status_code=409
-            )
-
-        if respond_async:
-            return JSONResponse(jsonable_encoder(initial_response), status_code=202)
-
-        try:
-            response = PredictionResponse(**async_result.get().dict())
+            response = NewPredictionResponse(predictions=all_results)
         except ValidationError as e:
             _log_invalid_output(e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
         response_object = response.dict()
-        response_object["output"] = upload_files(
-            response_object["output"],
-            upload_file=lambda fh: upload_file(fh, request.output_file_prefix),  # type: ignore
-        )
+        # response_object["output"] = upload_files(
+        #     response_object["output"],
+        #     upload_file=lambda fh: upload_file(fh, request.output_file_prefix),  # type: ignore
+        # )
 
         # FIXME: clean up output files
         encoded_response = jsonable_encoder(response_object)
