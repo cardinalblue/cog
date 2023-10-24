@@ -111,6 +111,31 @@ def create_app(
                 "setup": app.state.setup_result_payload,
             }
         )
+    
+    @app.get("/health/readiness")
+    def healthcheck_readiness() -> Any:
+        _check_setup_result()
+        health = app.state.health
+        return jsonable_encoder(
+            {
+                "status": health.name,
+                "setup": app.state.setup_result_payload,
+            }
+        )
+    
+    @app.get("/health/liveliness")
+    def healthcheck_liveliness() -> Any:
+        _check_setup_result()
+        if app.state.health == Health.READY:
+            health = Health.BUSY if runner.is_busy() else Health.READY
+        else:
+            health = app.state.health
+        return jsonable_encoder(
+            {
+                "status": health.name,
+                "setup": app.state.setup_result_payload,
+            }
+        )
 
     @app.post(
         "/predictions",
