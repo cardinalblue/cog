@@ -104,6 +104,52 @@ def create_app(
                 "setup": app.state.setup_result_payload,
             }
         )
+    
+    @app.get("/health/ready")
+    def healthcheck_readiness() -> Any:
+        _check_setup_result()
+        health = app.state.health
+        
+        if health == Health.UNKNOWN:
+            return JSONResponse(
+                {"detail": "Unknown server status"}, status_code=418
+            )
+        if health == Health.SETUP_FAILED:
+            return JSONResponse(
+                {"detail": "Error starting server"}, status_code=500
+            )
+        if health == Health.STARTING:
+            return JSONResponse(
+                {"detail": "Server is starting"}, status_code=503
+            )
+        return jsonable_encoder(
+            {
+                "status": health.name,
+                "setup": app.state.setup_result_payload,
+            }
+        )
+    
+    @app.get("/health/live")
+    def healthcheck_liveliness() -> Any:
+        _check_setup_result()
+        if app.state.health == Health.READY:
+            health = Health.BUSY if runner.is_busy() else Health.READY
+        else:
+            health = app.state.health
+
+        if health == Health.UNKNOWN:
+            return JSONResponse(
+                {"detail": "Unknown server status"}, status_code=418
+            )
+        if health == Health.SETUP_FAILED:
+            return JSONResponse(
+                {"detail": "Error starting server"}, status_code=500
+            )
+        return jsonable_encoder(
+            {
+                "status": health.name
+            }
+        )
 
     @app.post(
         "/predictions",
