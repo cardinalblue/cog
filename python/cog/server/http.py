@@ -112,7 +112,7 @@ def create_app(
         
         if health == Health.UNKNOWN:
             return JSONResponse(
-                {"detail": "Unknown server status"}, status_code=418
+                {"detail": "Unknown server status"}, status_code=500
             )
         if health == Health.SETUP_FAILED:
             return JSONResponse(
@@ -139,7 +139,7 @@ def create_app(
 
         if health == Health.UNKNOWN:
             return JSONResponse(
-                {"detail": "Unknown server status"}, status_code=418
+                {"detail": "Unknown server status"}, status_code=500
             )
         if health == Health.SETUP_FAILED:
             return JSONResponse(
