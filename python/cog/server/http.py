@@ -41,6 +41,7 @@ log = structlog.get_logger("cog.server.http")
 sentry_dsn = os.getenv("SENTRY_DSN", None)
 traces_sample_rate = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
 profiles_sample_rate = float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.0"))
+environment = os.getenv("SENTRY_ENVIRONMENT", "production")
 if sentry_dsn is not None:
     sentry_sdk.init(
         dsn=sentry_dsn,
@@ -52,6 +53,7 @@ if sentry_dsn is not None:
         # We recommend adjusting this value in production.
         profiles_sample_rate=profiles_sample_rate,
         enable_tracing=True,
+        environment=environment,
     )
 
 
