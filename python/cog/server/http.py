@@ -6,6 +6,7 @@ import socket
 import sys
 import textwrap
 import threading
+import sentry_sdk
 from enum import Enum, auto, unique
 from typing import Any, Callable, Dict, Optional, Union
 
@@ -29,6 +30,25 @@ from ..predictor import (get_input_type, get_output_type, get_predictor_ref,
 from .runner import PredictionRunner, RunnerBusyError, UnknownPredictionError
 
 log = structlog.get_logger("cog.server.http")
+
+
+sentry_dsn = os.getenv("SENTRY_DSN", None)
+traces_sample_rate = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
+profiles_sample_rate = float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.0"))
+environment = os.getenv("SENTRY_ENVIRONMENT", "production")
+if sentry_dsn is not None:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        # Set traces_sample_rate to 1.0 to capture 100%
+        # of transactions for performance monitoring.
+        traces_sample_rate=traces_sample_rate,
+        # Set profiles_sample_rate to 1.0 to profile 100%
+        # of sampled transactions.
+        # We recommend adjusting this value in production.
+        profiles_sample_rate=profiles_sample_rate,
+        enable_tracing=True,
+        environment=environment,
+    )
 
 
 @unique
