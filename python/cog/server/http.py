@@ -6,10 +6,10 @@ import socket
 import sys
 import textwrap
 import threading
-import sentry_sdk
 from enum import Enum, auto, unique
 from typing import Any, Callable, Dict, Optional, Union
 
+import sentry_sdk
 import structlog
 import uvicorn
 from anyio import CapacityLimiter
@@ -124,12 +124,12 @@ def create_app(
                 "setup": app.state.setup_result_payload,
             }
         )
-    
+
     @app.get("/health/ready")
     def healthcheck_readiness() -> Any:
         _check_setup_result()
         health = app.state.health
-        
+
         if health == Health.UNKNOWN:
             return JSONResponse(
                 {"detail": "Unknown server status"}, status_code=500
@@ -148,7 +148,7 @@ def create_app(
                 "setup": app.state.setup_result_payload,
             }
         )
-    
+
     @app.get("/health/live")
     def healthcheck_liveliness() -> Any:
         _check_setup_result()
@@ -213,6 +213,12 @@ def create_app(
                 initial_response, async_result = runner.predict(
                     instance_request, upload=respond_async
                 )
+                raw_instance_response = async_result.get().dict()
+
+                # Return JSONResponse to prevent trigger error multiple times on sentry
+                if raw_instance_response.get('status') == 'failed':
+                    return JSONResponse({'detail': raw_instance_response.get('error')}, status_code=500)
+
                 instance_response = async_result.get().dict()['output']
                 all_results.append(instance_response)
             except RunnerBusyError:
