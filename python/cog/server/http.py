@@ -142,6 +142,11 @@ def create_app(
             return JSONResponse(
                 {"detail": "Server is starting"}, status_code=503
             )
+         # Cog server is designed to handle one request at a time
+        if runner.is_busy():
+            return JSONResponse(
+                {"detail": "Server is busy"}, status_code=503
+            )
         return jsonable_encoder(
             {
                 "status": health.name,
