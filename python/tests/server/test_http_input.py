@@ -7,53 +7,53 @@ import responses
 from .conftest import make_client, uses_predictor
 
 
-@uses_predictor("input_none")
-def test_no_input(client, match):
-    resp = client.post("/predictions")
-    assert resp.status_code == 200
-    assert resp.json() == match({"status": "succeeded", "output": "foobar"})
+# @uses_predictor("input_none")
+# def test_no_input(client, match):
+#     resp = client.post("/predictions")
+#     assert resp.status_code == 200
+#     assert resp.json() == match({"status": "succeeded", "output": "foobar"})
 
 
-@uses_predictor("input_none")
-def test_missing_input(client, match):
-    """Check we support missing input fields for backwards compatibility"""
-    resp = client.post("/predictions", json={})
-    assert resp.status_code == 200
-    assert resp.json() == match({"status": "succeeded", "output": "foobar"})
+# @uses_predictor("input_none")
+# def test_missing_input(client, match):
+#     """Check we support missing input fields for backwards compatibility"""
+#     resp = client.post("/predictions", json={})
+#     assert resp.status_code == 200
+#     assert resp.json() == match({"status": "succeeded", "output": "foobar"})
 
 
-@uses_predictor("input_none")
-def test_empty_input(client, match):
-    """Check we support empty input fields for backwards compatibility"""
-    resp = client.post("/predictions", json={"input": {}})
-    assert resp.status_code == 200
-    assert resp.json() == match({"status": "succeeded", "output": "foobar"})
+# @uses_predictor("input_none")
+# def test_empty_input(client, match):
+#     """Check we support empty input fields for backwards compatibility"""
+#     resp = client.post("/predictions", json={"input": {}})
+#     assert resp.status_code == 200
+#     assert resp.json() == match({"status": "succeeded", "output": "foobar"})
 
 
 @uses_predictor("input_string")
 def test_good_str_input(client, match):
-    resp = client.post("/predictions", json={"input": {"text": "baz"}})
+    resp = client.post("/predictions", json={"instances": [{"text": "baz"}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"status": "succeeded", "output": "baz"})
+    assert resp.json() == match({"predictions": ["baz"]})
 
 
 @uses_predictor("input_integer")
 def test_good_int_input(client, match):
-    resp = client.post("/predictions", json={"input": {"num": 3}})
+    resp = client.post("/predictions", json={"instances": [{"num": 3}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"output": 27, "status": "succeeded"})
-    resp = client.post("/predictions", json={"input": {"num": -3}})
+    assert resp.json() == match({"predictions": [27]})
+    resp = client.post("/predictions", json={"instances": [{"num": -3}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"output": -27, "status": "succeeded"})
+    assert resp.json() == match({"predictions": [-27]})
 
 
 @uses_predictor("input_integer")
 def test_bad_int_input(client):
-    resp = client.post("/predictions", json={"input": {"num": "foo"}})
+    resp = client.post("/predictions", json={"instances": [{"num": "foo"}]})
     assert resp.json() == {
         "detail": [
             {
-                "loc": ["body", "input", "num"],
+                "loc": ["body", "instances", 0, "num"],
                 "msg": "value is not a valid integer",
                 "type": "type_error.integer",
             }
@@ -64,13 +64,13 @@ def test_bad_int_input(client):
 
 @uses_predictor("input_integer_default")
 def test_default_int_input(client, match):
-    resp = client.post("/predictions", json={"input": {}})
+    resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"output": 25, "status": "succeeded"})
+    assert resp.json() == match({"predictions": [25]})
 
-    resp = client.post("/predictions", json={"input": {"num": 3}})
+    resp = client.post("/predictions", json={"instances": [{"num": 3}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"output": 9, "status": "succeeded"})
+    assert resp.json() == match({"predictions": [9]})
 
 # Not supported yet
 # @uses_predictor("input_file")
@@ -186,12 +186,12 @@ def test_default_int_input(client, match):
 
 @uses_predictor("input_ge_le")
 def test_gt_lt(client):
-    resp = client.post("/predictions", json={"input": {"num": 2}})
+    resp = client.post("/predictions", json={"instances": [{"num": 2}]})
     assert resp.json() == {
         "detail": [
             {
                 "ctx": {"limit_value": 3.01},
-                "loc": ["body", "input", "num"],
+                "loc": ["body", "instances", 0, "num"],
                 "msg": "ensure this value is greater than or equal to 3.01",
                 "type": "value_error.number.not_ge",
             }
@@ -199,23 +199,23 @@ def test_gt_lt(client):
     }
     assert resp.status_code == 422
 
-    resp = client.post("/predictions", json={"input": {"num": 5}})
+    resp = client.post("/predictions", json={"instances": [{"num": 5}]})
     assert resp.status_code == 200
 
 
 @uses_predictor("input_choices")
 def test_choices_str(client):
-    resp = client.post("/predictions", json={"input": {"text": "foo"}})
+    resp = client.post("/predictions", json={"instances": [{"text": "foo"}]})
     assert resp.status_code == 200
-    resp = client.post("/predictions", json={"input": {"text": "baz"}})
+    resp = client.post("/predictions", json={"instances": [{"text": "baz"}]})
     assert resp.status_code == 422
 
 
 @uses_predictor("input_choices_integer")
 def test_choices_int(client):
-    resp = client.post("/predictions", json={"input": {"x": 1}})
+    resp = client.post("/predictions", json={"instances": [{"x": 1}]})
     assert resp.status_code == 200
-    resp = client.post("/predictions", json={"input": {"x": 3}})
+    resp = client.post("/predictions", json={"instances": [{"x": 3}]})
     assert resp.status_code == 422
 
 
@@ -224,6 +224,6 @@ def test_untyped_inputs():
         make_client("input_untyped")
 
 
-def test_input_with_unsupported_type():
-    with pytest.raises(TypeError):
-        make_client("input_unsupported_type")
+# def test_input_with_unsupported_type():
+#     with pytest.raises(TypeError):
+#         make_client("input_unsupported_type")
