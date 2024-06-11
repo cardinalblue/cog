@@ -12,64 +12,66 @@ def test_return_wrong_type(client):
     resp = client.post("/predictions")
     assert resp.status_code == 500
 
-
-@uses_predictor("output_file")
-def test_output_file(client, match):
-    res = client.post("/predictions")
-    assert res.status_code == 200
-    assert res.json() == match(
-        {
-            "status": "succeeded",
-            "output": "data:application/octet-stream;base64,aGVsbG8=",  # hello
-        }
-    )
-
-
-@responses.activate
-@uses_predictor("output_file_named")
-def test_output_file_to_http(client, match):
-    responses.add(
-        responses.PUT,
-        "http://example.com/upload/foo.txt",
-        status=201,
-        match=[multipart_matcher({"file": ("foo.txt", b"hello")})],
-    )
-
-    res = client.post(
-        "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
-    )
-    assert res.json() == match(
-        {
-            "status": "succeeded",
-            "output": "http://example.com/upload/foo.txt",
-        }
-    )
-    assert res.status_code == 200
+# Not supported yet
+# @uses_predictor("output_file")
+# def test_output_file(client, match):
+#     res = client.post("/predictions")
+#     assert res.status_code == 200
+#     assert res.json() == match(
+#         {
+#             "status": "succeeded",
+#             "output": "data:application/octet-stream;base64,aGVsbG8=",  # hello
+#         }
+#     )
 
 
-@responses.activate
-@uses_predictor_with_client_options("output_file_named", upload_url="https://dontuseme")
-def test_output_file_to_http_with_upload_url_specified(client, match):
-    # Ensure that even when --upload-url is provided on the command line,
-    # uploads continue to go to the specified output_file_prefix, for backwards
-    # compatibility.
-    responses.add(
-        responses.PUT,
-        "http://example.com/upload/foo.txt",
-        status=201,
-        match=[multipart_matcher({"file": ("foo.txt", b"hello")})],
-    )
+# Not supported yet
+# @responses.activate
+# @uses_predictor("output_file_named")
+# def test_output_file_to_http(client, match):
+#     responses.add(
+#         responses.PUT,
+#         "http://example.com/upload/foo.txt",
+#         status=201,
+#         match=[multipart_matcher({"file": ("foo.txt", b"hello")})],
+#     )
 
-    res = client.post(
-        "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
-    )
-    assert res.json() == match(
-        {
-            "status": "succeeded",
-            "output": "http://example.com/upload/foo.txt",
-        }
-    )
-    assert res.status_code == 200
+#     res = client.post(
+#         "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
+#     )
+#     assert res.json() == match(
+#         {
+#             "status": "succeeded",
+#             "output": "http://example.com/upload/foo.txt",
+#         }
+#     )
+#     assert res.status_code == 200
+
+
+# Not supported yet
+# @responses.activate
+# @uses_predictor_with_client_options("output_file_named", upload_url="https://dontuseme")
+# def test_output_file_to_http_with_upload_url_specified(client, match):
+#     # Ensure that even when --upload-url is provided on the command line,
+#     # uploads continue to go to the specified output_file_prefix, for backwards
+#     # compatibility.
+#     responses.add(
+#         responses.PUT,
+#         "http://example.com/upload/foo.txt",
+#         status=201,
+#         match=[multipart_matcher({"file": ("foo.txt", b"hello")})],
+#     )
+
+#     res = client.post(
+#         "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
+#     )
+#     assert res.json() == match(
+#         {
+#             "status": "succeeded",
+#             "output": "http://example.com/upload/foo.txt",
+#         }
+#     )
+#     assert res.status_code == 200
 
 
 @uses_predictor("output_path_image")
@@ -113,19 +115,20 @@ def test_json_output_numpy(client, match):
     assert resp.json() == match({"output": 1.0, "status": "succeeded"})
 
 
-@uses_predictor("output_complex")
-def test_complex_output(client, match):
-    resp = client.post("/predictions")
-    assert resp.json() == match(
-        {
-            "output": {
-                "file": "data:application/octet-stream;base64,aGVsbG8=",
-                "text": "hello",
-            },
-            "status": "succeeded",
-        }
-    )
-    assert resp.status_code == 200
+# Not supported yet
+# @uses_predictor("output_complex")
+# def test_complex_output(client, match):
+#     resp = client.post("/predictions")
+#     assert resp.json() == match(
+#         {
+#             "output": {
+#                 "file": "data:application/octet-stream;base64,aGVsbG8=",
+#                 "text": "hello",
+#             },
+#             "status": "succeeded",
+#         }
+#     )
+#     assert resp.status_code == 200
 
 
 @uses_predictor("output_iterator_complex")

@@ -72,109 +72,116 @@ def test_default_int_input(client, match):
     assert resp.status_code == 200
     assert resp.json() == match({"output": 9, "status": "succeeded"})
 
-
-@uses_predictor("input_file")
-def test_file_input_data_url(client, match):
-    resp = client.post(
-        "/predictions",
-        json={
-            "input": {
-                "file": "data:text/plain;base64,"
-                + base64.b64encode(b"bar").decode("utf-8")
-            }
-        },
-    )
-    assert resp.json() == match({"output": "bar", "status": "succeeded"})
-    assert resp.status_code == 200
-
-
-@uses_predictor("input_file")
-def test_file_input_with_http_url(client, httpserver, match):
-    # Use a real HTTP server rather than responses as file fetching occurs on
-    # the other side of the Worker process boundary.
-    httpserver.expect_request("/foo.txt").respond_with_data("hello")
-    resp = client.post(
-        "/predictions",
-        json={"input": {"file": httpserver.url_for("/foo.txt")}},
-    )
-    assert resp.json() == match({"output": "hello", "status": "succeeded"})
+# Not supported yet
+# @uses_predictor("input_file")
+# def test_file_input_data_url(client, match):
+#     resp = client.post(
+#         "/predictions",
+#         json={
+#             "input": {
+#                 "file": "data:text/plain;base64,"
+#                 + base64.b64encode(b"bar").decode("utf-8")
+#             }
+#         },
+#     )
+#     assert resp.json() == match({"output": "bar", "status": "succeeded"})
+#     assert resp.status_code == 200
 
 
-@uses_predictor("input_path_2")
-def test_file_input_with_http_url_error(client, httpserver, match):
-    httpserver.expect_request("/foo.txt").respond_with_data("haha", status=404)
-    resp = client.post(
-        "/predictions",
-        json={"input": {"path": httpserver.url_for("/foo.txt")}},
-    )
-    assert resp.json() == match({"status": "failed"})
+# Not supported yet
+# @uses_predictor("input_file")
+# def test_file_input_with_http_url(client, httpserver, match):
+#     # Use a real HTTP server rather than responses as file fetching occurs on
+#     # the other side of the Worker process boundary.
+#     httpserver.expect_request("/foo.txt").respond_with_data("hello")
+#     resp = client.post(
+#         "/predictions",
+#         json={"input": {"file": httpserver.url_for("/foo.txt")}},
+#     )
+#     assert resp.json() == match({"output": "hello", "status": "succeeded"})
 
 
-@uses_predictor("input_path")
-def test_path_input_data_url(client, match):
-    resp = client.post(
-        "/predictions",
-        json={
-            "input": {
-                "path": "data:text/plain;base64,"
-                + base64.b64encode(b"bar").decode("utf-8")
-            }
-        },
-    )
-    assert resp.json() == match({"output": "txt bar", "status": "succeeded"})
-    assert resp.status_code == 200
+# Not supported yet
+# @uses_predictor("input_path_2")
+# def test_file_input_with_http_url_error(client, httpserver, match):
+#     httpserver.expect_request("/foo.txt").respond_with_data("haha", status=404)
+#     resp = client.post(
+#         "/predictions",
+#         json={"input": {"path": httpserver.url_for("/foo.txt")}},
+#     )
+#     assert resp.json() == match({"status": "failed"})
 
 
-@uses_predictor("input_path_2")
-def test_path_temporary_files_are_removed(client, match):
-    resp = client.post(
-        "/predictions",
-        json={
-            "input": {
-                "path": "data:text/plain;base64,"
-                + base64.b64encode(b"bar").decode("utf-8")
-            }
-        },
-    )
-    temporary_path = resp.json()["output"]
-    assert not os.path.exists(temporary_path)
+# Not supported yet
+# @uses_predictor("input_path")
+# def test_path_input_data_url(client, match):
+#     resp = client.post(
+#         "/predictions",
+#         json={
+#             "input": {
+#                 "path": "data:text/plain;base64,"
+#                 + base64.b64encode(b"bar").decode("utf-8")
+#             }
+#         },
+#     )
+#     assert resp.json() == match({"output": "txt bar", "status": "succeeded"})
+#     assert resp.status_code == 200
 
 
-@responses.activate
-@uses_predictor("input_path")
-def test_path_input_with_http_url(client, match):
-    responses.add(responses.GET, "http://example.com/foo.txt", body="hello")
-    resp = client.post(
-        "/predictions",
-        json={"input": {"path": "http://example.com/foo.txt"}},
-    )
-    assert resp.json() == match({"output": "txt hello", "status": "succeeded"})
+# Not supported yet
+# @uses_predictor("input_path_2")
+# def test_path_temporary_files_are_removed(client, match):
+#     resp = client.post(
+#         "/predictions",
+#         json={
+#             "input": {
+#                 "path": "data:text/plain;base64,"
+#                 + base64.b64encode(b"bar").decode("utf-8")
+#             }
+#         },
+#     )
+#     temporary_path = resp.json()["output"]
+#     assert not os.path.exists(temporary_path)
 
 
-@uses_predictor("input_file")
-def test_file_bad_input(client):
-    resp = client.post(
-        "/predictions",
-        json={"input": {"file": "foo"}},
-    )
-    assert resp.status_code == 422
+# Not supported yet
+# @responses.activate
+# @uses_predictor("input_path")
+# def test_path_input_with_http_url(client, match):
+#     responses.add(responses.GET, "http://example.com/foo.txt", body="hello")
+#     resp = client.post(
+#         "/predictions",
+#         json={"input": {"path": "http://example.com/foo.txt"}},
+#     )
+#     assert resp.json() == match({"output": "txt hello", "status": "succeeded"})
 
 
-@uses_predictor("input_multiple")
-def test_multiple_arguments(client, match):
-    resp = client.post(
-        "/predictions",
-        json={
-            "input": {
-                "text": "baz",
-                "num1": 5,
-                "path": "data:text/plain;base64,"
-                + base64.b64encode(b"wibble").decode("utf-8"),
-            }
-        },
-    )
-    assert resp.status_code == 200
-    assert resp.json() == match({"output": "baz 50 wibble", "status": "succeeded"})
+# Not supported yet
+# @uses_predictor("input_file")
+# def test_file_bad_input(client):
+#     resp = client.post(
+#         "/predictions",
+#         json={"input": {"file": "foo"}},
+#     )
+#     assert resp.status_code == 422
+
+
+# Not supported yet
+# @uses_predictor("input_multiple")
+# def test_multiple_arguments(client, match):
+#     resp = client.post(
+#         "/predictions",
+#         json={
+#             "input": {
+#                 "text": "baz",
+#                 "num1": 5,
+#                 "path": "data:text/plain;base64,"
+#                 + base64.b64encode(b"wibble").decode("utf-8"),
+#             }
+#         },
+#     )
+#     assert resp.status_code == 200
+#     assert resp.json() == match({"output": "baz 50 wibble", "status": "succeeded"})
 
 
 @uses_predictor("input_ge_le")

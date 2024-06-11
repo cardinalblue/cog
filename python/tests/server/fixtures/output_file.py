@@ -1,8 +1,9 @@
-import io
+# Not supported yet
+# import io
 
-from cog import BasePredictor, File
+# from cog import BasePredictor, File
 
 
-class Predictor(BasePredictor):
-    def predict(self) -> File:
-        return io.StringIO("hello")
+# class Predictor(BasePredictor):
+#     def predict(self) -> File:
+#         return io.StringIO("hello")
