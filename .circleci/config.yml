@@ -1,0 +1,33 @@
+version: 2.1
+
+jobs:
+  test_python:
+    parameters:
+      python_version:
+        type: string
+        default: 3.8
+    docker:
+      - image: cimg/python:<< parameters.python_version >>
+    steps:
+      - checkout
+      - run:
+          name: Install Python dependencies
+          command: |
+            python -m pip install '.[dev]'
+            yes | python -m mypy --install-types replicate || true
+      - run:
+          name: Run tests
+          command: make test-python
+          environment:
+            HYPOTHESIS_PROFILE: ci
+
+workflows:
+  test_python_versions:
+    jobs:
+      - test_python:
+          branches:
+            ignore:
+              - main
+          matrix:
+            parameters:
+              python_version: ["3.8", "3.9"]
