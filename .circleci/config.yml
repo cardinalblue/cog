@@ -22,12 +22,12 @@ jobs:
             HYPOTHESIS_PROFILE: ci
 
 workflows:
-  test_python_versions:
+  test_python_multiple_versions:
     jobs:
       - test_python:
-          branches:
-            ignore:
-              - main
+          filters:
+            branches:
+              ignore: "main"
           matrix:
             parameters:
               python_version: ["3.8", "3.9"]
