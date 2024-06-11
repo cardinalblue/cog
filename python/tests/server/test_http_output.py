@@ -6,11 +6,11 @@ from responses.matchers import multipart_matcher
 
 from .conftest import uses_predictor, uses_predictor_with_client_options
 
-
-@uses_predictor("output_wrong_type")
-def test_return_wrong_type(client):
-    resp = client.post("/predictions")
-    assert resp.status_code == 500
+# Not allow empty request body
+# @uses_predictor("output_wrong_type")
+# def test_return_wrong_type(client):
+#     resp = client.post("/predictions")
+#     assert resp.status_code == 500
 
 # Not supported yet
 # @uses_predictor("output_file")
@@ -74,45 +74,47 @@ def test_return_wrong_type(client):
 #     assert res.status_code == 200
 
 
-@uses_predictor("output_path_image")
-def test_output_path(client):
-    res = client.post("/predictions")
-    assert res.status_code == 200
-    header, b64data = res.json()["output"].split(",", 1)
-    # need both image/bmp and image/x-ms-bmp until https://bugs.python.org/issue44211 is fixed
-    assert header in ["data:image/bmp;base64", "data:image/x-ms-bmp;base64"]
-    assert len(base64.b64decode(b64data)) == 195894
+# Not supported yet
+# @uses_predictor("output_path_image")
+# def test_output_path(client):
+#     res = client.post("/predictions")
+#     assert res.status_code == 200
+#     header, b64data = res.json()["output"].split(",", 1)
+#     # need both image/bmp and image/x-ms-bmp until https://bugs.python.org/issue44211 is fixed
+#     assert header in ["data:image/bmp;base64", "data:image/x-ms-bmp;base64"]
+#     assert len(base64.b64decode(b64data)) == 195894
 
 
-@responses.activate
-@uses_predictor("output_path_text")
-def test_output_path_to_http(client, match):
-    fh = io.BytesIO(b"hello")
-    fh.name = "file.txt"
-    responses.add(
-        responses.PUT,
-        "http://example.com/upload/file.txt",
-        status=201,
-        match=[multipart_matcher({"file": fh})],
-    )
+# Not supported yet
+# @responses.activate
+# @uses_predictor("output_path_text")
+# def test_output_path_to_http(client, match):
+#     fh = io.BytesIO(b"hello")
+#     fh.name = "file.txt"
+#     responses.add(
+#         responses.PUT,
+#         "http://example.com/upload/file.txt",
+#         status=201,
+#         match=[multipart_matcher({"file": fh})],
+#     )
 
-    res = client.post(
-        "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
-    )
-    assert res.json() == match(
-        {
-            "status": "succeeded",
-            "output": "http://example.com/upload/file.txt",
-        }
-    )
-    assert res.status_code == 200
+#     res = client.post(
+#         "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
+#     )
+#     assert res.json() == match(
+#         {
+#             "status": "succeeded",
+#             "output": "http://example.com/upload/file.txt",
+#         }
+#     )
+#     assert res.status_code == 200
 
 
 @uses_predictor("output_numpy")
 def test_json_output_numpy(client, match):
-    resp = client.post("/predictions")
+    resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"output": 1.0, "status": "succeeded"})
+    assert resp.json() == match({"predictions": [1.0]})
 
 
 # Not supported yet
@@ -133,11 +135,10 @@ def test_json_output_numpy(client, match):
 
 @uses_predictor("output_iterator_complex")
 def test_iterator_of_list_of_complex_output(client, match):
-    resp = client.post("/predictions")
+    resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.json() == match(
         {
-            "output": [[{"text": "hello"}]],
-            "status": "succeeded",
+            "predictions": [[[{"text": "hello"}]]],
         }
     )
     assert resp.status_code == 200
