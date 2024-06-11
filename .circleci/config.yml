@@ -1,13 +1,13 @@
 version: 2.1
 
 jobs:
-  test_python:
+  test-python:
     parameters:
-      python_version:
+      python-version:
         type: string
         default: "3.8"
     docker:
-      - image: cimg/python:<< parameters.python_version >>
+      - image: cimg/python:<< parameters.python-version >>
     steps:
       - checkout
       - run:
@@ -22,12 +22,21 @@ jobs:
             HYPOTHESIS_PROFILE: ci
 
 workflows:
-  test_python_multiple_versions:
+  test-python-multiple-versions:
     jobs:
-      - test_python:
+      # Run the job with the default Python version first
+      - test-python:
+          name: test-default-python
+          filters:
+            branches:
+              ignore: "main"
+      - test-python:
+          name: test-multiple-python-versions
           filters:
             branches:
               ignore: "main"
           matrix:
             parameters:
-              python_version: ["3.8", "3.9"]
+              python-version: ["3.9", "3.10", "3.11", "3.12"] # 3.8 has already been tested
+          requires:
+            - test-default-python
