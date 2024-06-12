@@ -338,7 +338,7 @@ def create_app(
     )
     async def predict(
         request: NewPredictionRequest = Body(default=None),
-        prefer: Optional[str] = Header(default=None),
+        # prefer: Optional[str] = Header(default=None),
         traceparent: Optional[str] = Header(default=None, include_in_schema=False),
         tracestate: Optional[str] = Header(default=None, include_in_schema=False),
     ) -> Any:  # type: ignore

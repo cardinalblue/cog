@@ -225,13 +225,13 @@ def test_choices_int(client):
 
 @uses_predictor("input_union_string_or_list_of_strings")
 def test_union_strings(client):
-    resp = client.post("/predictions", json={"input": {"args": "abc"}})
+    resp = client.post("/predictions", json={"instances": [{"args": "abc"}]})
     assert resp.status_code == 200
-    assert resp.json()["output"] == "abc"
+    assert resp.json()["predictions"][0] == "abc"
 
-    resp = client.post("/predictions", json={"input": {"args": ["a", "b", "c"]}})
+    resp = client.post("/predictions", json={"instances": [{"args": ["a", "b", "c"]}]})
     assert resp.status_code == 200
-    assert resp.json()["output"] == "abc"
+    assert resp.json()["predictions"][0] == "abc"
 
     # FIXME: Numbers are successfully cast to strings, but maybe shouldn't be
     # resp = client.post("/predictions", json={"input": {"args": 123}})
@@ -242,27 +242,27 @@ def test_union_strings(client):
 
 @uses_predictor("input_union_integer_or_list_of_integers")
 def test_union_integers(client):
-    resp = client.post("/predictions", json={"input": {"args": 123}})
+    resp = client.post("/predictions", json={"instances": [{"args": 123}]})
     assert resp.status_code == 200
-    assert resp.json()["output"] == 123
+    assert resp.json()["predictions"][0] == 123
 
-    resp = client.post("/predictions", json={"input": {"args": [1, 2, 3]}})
+    resp = client.post("/predictions", json={"instances": [{"args": [1, 2, 3]}]})
     assert resp.status_code == 200
-    assert resp.json()["output"] == 6
+    assert resp.json()["predictions"][0] == 6
 
-    resp = client.post("/predictions", json={"input": {"args": "abc"}})
+    resp = client.post("/predictions", json={"instances": [{"args": "abc"}]})
     assert resp.status_code == 422
-    resp = client.post("/predictions", json={"input": {"args": ["a", "b", "c"]}})
+    resp = client.post("/predictions", json={"instances": [{"args": ["a", "b", "c"]}]})
     assert resp.status_code == 422
 
 
 @uses_predictor("input_secret")
 def test_secret_str(client, match):
-    resp = client.post("/predictions", json={"input": {"secret": "foo"}})
+    resp = client.post("/predictions", json={"instances": [{"secret": "foo"}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"output": "foo", "status": "succeeded"})
+    assert resp.json() == match({"predictions": ["foo"]})
 
-    resp = client.post("/predictions", json={"input": {"secret": {}}})
+    resp = client.post("/predictions", json={"instances": [{"secret": {}}]})
     assert resp.status_code == 422
 
 
