@@ -18,7 +18,7 @@ func newPushCommand() *cobra.Command {
 		Use: "push [IMAGE]",
 
 		Short:   "Build and push model in current directory to a Docker registry",
-		Example: `cog push registry.hooli.corp/hotdog-detector`,
+		Example: `cog push r8.im/your-username/hotdog-detector`,
 		RunE:    push,
 		Args:    cobra.MaximumNArgs(1),
 	}
@@ -29,6 +29,7 @@ func newPushCommand() *cobra.Command {
 	addUseCudaBaseImageFlag(cmd)
 	addDockerfileFlag(cmd)
 	addBuildProgressOutputFlag(cmd)
+	addUseCogBaseImageFlag(cmd)
 
 	return cmd
 }
@@ -45,10 +46,10 @@ func push(cmd *cobra.Command, args []string) error {
 	}
 
 	if imageName == "" {
-		return fmt.Errorf("To push images, you must either set the 'image' option in cog.yaml or pass an image name as an argument. For example, 'cog push registry.hooli.corp/hotdog-detector'")
+		return fmt.Errorf("To push images, you must either set the 'image' option in cog.yaml or pass an image name as an argument. For example, 'cog push r8.im/your-username/hotdog-detector'")
 	}
 
-	if err := image.Build(cfg, projectDir, imageName, buildSecrets, buildNoCache, buildSeparateWeights, buildUseCudaBaseImage, buildProgressOutput, buildSchemaFile, buildDockerfileFile); err != nil {
+	if err := image.Build(cfg, projectDir, imageName, buildSecrets, buildNoCache, buildSeparateWeights, buildUseCudaBaseImage, buildProgressOutput, buildSchemaFile, buildDockerfileFile, buildUseCogBaseImage); err != nil {
 		return err
 	}
 

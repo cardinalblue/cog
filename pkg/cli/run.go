@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -9,23 +10,32 @@ import (
 	"github.com/replicate/cog/pkg/config"
 	"github.com/replicate/cog/pkg/docker"
 	"github.com/replicate/cog/pkg/image"
+	"github.com/replicate/cog/pkg/util"
 	"github.com/replicate/cog/pkg/util/console"
 )
 
 var (
 	runPorts []string
+	gpusFlag string
 )
+
+func addGpusFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&gpusFlag, "gpus", "", "GPU devices to add to the container, in the same format as `docker run --gpus`.")
+}
 
 func newRunCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "run <command> [arg...]",
-		Short: "Run a command inside a Docker environment",
-		RunE:  run,
-		Args:  cobra.MinimumNArgs(1),
+		Use:     "run <command> [arg...]",
+		Short:   "Run a command inside a Docker environment",
+		RunE:    run,
+		PreRunE: checkMutuallyExclusiveFlags,
+		Args:    cobra.MinimumNArgs(1),
 	}
 	addBuildProgressOutputFlag(cmd)
 	addDockerfileFlag(cmd)
 	addUseCudaBaseImageFlag(cmd)
+	addUseCogBaseImageFlag(cmd)
+	addGpusFlag(cmd)
 
 	flags := cmd.Flags()
 	// Flags after first argment are considered args and passed to command
@@ -44,14 +54,15 @@ func run(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	imageName, err := image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, buildProgressOutput)
+	imageName, err := image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, buildUseCogBaseImage, buildProgressOutput)
 	if err != nil {
 		return err
 	}
 
 	gpus := ""
-	if cfg.Build.GPU {
+	if gpusFlag != "" {
+		gpus = gpusFlag
+	} else if cfg.Build.GPU {
 		gpus = "all"
 	}
 
@@ -62,6 +73,10 @@ func run(cmd *cobra.Command, args []string) error {
 		Image:   imageName,
 		Volumes: []docker.Volume{{Source: projectDir, Destination: "/src"}},
 		Workdir: "/src",
+	}
+
+	if util.IsAppleSiliconMac(runtime.GOOS, runtime.GOARCH) {
+		runOptions.Platform = "linux/amd64"
 	}
 
 	for _, portString := range runPorts {
@@ -77,7 +92,9 @@ func run(cmd *cobra.Command, args []string) error {
 	console.Infof("Running '%s' in Docker with the current directory mounted as a volume...", strings.Join(args, " "))
 
 	err = docker.Run(runOptions)
-	if runOptions.GPUs != "" && err == docker.ErrMissingDeviceDriver {
+	// Only retry if we're using a GPU but but the user didn't explicitly select a GPU with --gpus
+	// If the user specified the wrong GPU, they are explicitly selecting a GPU and they'll want to hear about it
+	if runOptions.GPUs == "all" && err == docker.ErrMissingDeviceDriver {
 		console.Info("Missing device driver, re-trying without GPU")
 
 		runOptions.GPUs = ""
