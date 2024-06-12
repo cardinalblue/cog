@@ -1,10 +1,9 @@
-# Not supported yet
-# from cog import File
+from cog import File
 
 
-# class Predictor:
-#     def setup(self, weights: File):
-#         self.text = weights.read()
+class Predictor:
+    def setup(self, weights: File):
+        self.text = weights.read()
 
-#     def predict(self) -> str:
-#         return self.text
+    def predict(self) -> str:
+        return self.text

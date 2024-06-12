@@ -1,7 +1,6 @@
-# Not supported yet
-# from cog import BasePredictor, File
+from cog import BasePredictor, File
 
 
-# class Predictor(BasePredictor):
-#     def predict(self, file: File) -> str:
-#         return file.read()
+class Predictor(BasePredictor):
+    def predict(self, file: File) -> str:
+        return file.read()
