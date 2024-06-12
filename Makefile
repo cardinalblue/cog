@@ -67,9 +67,13 @@ test-go: pkg/dockerfile/embed/cog.whl | check-fmt vet lint-go
 test-integration: cog
 	cd test-integration/ && $(MAKE) PATH="$(PWD):$(PATH)" test
 
+# CircleCI docker executor will show the phsyical cores of the machine instead of the docker container.
+# This will cause the tests to fail because default timeout is too short.
+# Here we limit the number of parallel tests to 8 to avoid running too many processes at the same time.
+# https://discuss.circleci.com/t/x86-vm-cpu-ram-size-mismatch/45779
 .PHONY: test-python
 test-python:
-	$(PYTEST) -n auto -vv --cov=python/cog  --cov-report term-missing  python/tests $(if $(FILTER),-k "$(FILTER)",)
+	$(PYTEST) -n auto --maxprocesses 8 -vv --cov=python/cog  --cov-report term-missing  python/tests $(if $(FILTER),-k "$(FILTER)",)
 
 .PHONY: test
 test: test-go test-python test-integration

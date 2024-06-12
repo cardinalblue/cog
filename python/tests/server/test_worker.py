@@ -22,8 +22,7 @@ from hypothesis.stateful import (
 )
 
 # Set a longer deadline on CI as the instances are a bit slower.
-# PicCollage: change the deadline to 4000 because CircleCI XL Docker has less memory than GitHub Actions VM.
-settings.register_profile("ci", max_examples=100, deadline=10000)
+settings.register_profile("ci", max_examples=100, deadline=2000)
 settings.register_profile("default", max_examples=10, deadline=1500)
 settings.register_profile("slow", max_examples=10, deadline=2000)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
