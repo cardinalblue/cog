@@ -342,8 +342,29 @@
       "contributions": [
         "doc"
       ]
+    },
+    {
+      "login": "technillogue",
+      "name": "technillogue",
+      "avatar_url": "https://avatars.githubusercontent.com/u/945691?v=4",
+      "profile": "http://technillogue.github.io",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "aron",
+      "name": "Aron Carroll",
+      "avatar_url": "https://avatars.githubusercontent.com/u/47144?v=4",
+      "profile": "http://aroncarroll.com",
+      "contributions": [
+        "doc",
+        "code",
+        "ideas"
+      ]
     }
   ],
   "contributorsPerLine": 7,
-  "skipCi": true
+  "skipCi": true,
+  "commitType": "docs"
 }

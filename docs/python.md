@@ -50,7 +50,23 @@ Prepare the model so multiple predictions run efficiently.
 
 Use this _optional_ method to include any expensive one-off operations in here like loading trained models, instantiate data transformations, etc.
 
-It's best not to download model weights or any other files in this function. You should bake these into the image when you build it. This means your model doesn't depend on any other system being available and accessible. It also means the Docker image ID becomes an immutable identifier for the precise model you're running, instead of the combination of the image ID and whatever files it might have downloaded.
+Many models use this method to download their weights (e.g. using [`pget`](https://github.com/replicate/pget)). This has some advantages:
+
+- Smaller image sizes
+- Faster build times
+- Faster pushes and inference on [Replicate](https://replicate.com)
+
+However, this may also significantly increase your `setup()` time.
+
+As an alternative, some choose to store their weights directly in the image. You can simply leave your weights in the directory alongside your `cog.yaml` and ensure they are not excluded in your `.dockerignore` file.
+
+While this will increase your image size and build time, it offers other advantages:
+
+- Faster `setup()` time
+- Ensures idempotency and reduces your model's reliance on external systems
+- Preserves reproducibility as your model will be self-contained in the image
+
+> When using this method, you should use the `--separate-weights` flag on `cog build` to store weights in a [separate layer](https://github.com/replicate/cog/blob/12ac02091d93beebebed037f38a0c99cd8749806/docs/getting-started.md?plain=1#L219).
 
 ### `Predictor.predict(**kwargs)`
 
@@ -158,7 +174,7 @@ class Predictor(BasePredictor):
         return Output(text="hello", file=io.StringIO("hello"))
 ```
 
-Each of the output object's properties must be one of the supported output types. For the full list, see [Input and output types](#input-and-output-types).
+Each of the output object's properties must be one of the supported output types. For the full list, see [Input and output types](#input-and-output-types). Also, make sure to name the output class as `Output` and nothing else.
 
 ### Returning a list
 
@@ -168,7 +184,7 @@ The `predict()` method can return a list of any of the supported output types. H
 from cog import BasePredictor, Path
 
 class Predictor(BasePredictor):
-    def predict(self) -> List[Path]:
+    def predict(self) -> list[Path]:
         predictions = ["foo", "bar", "baz"]
         output = []
         for i, prediction in enumerate(predictions):
@@ -214,6 +230,9 @@ Each parameter of the `predict()` method must be annotated with a type. The meth
 
 ## `File()`
 
+> [!WARNING]  
+> `cog.File` is deprecated and will be removed in a future version of Cog. Use [`cog.Path`](#path) instead.
+
 The `cog.File` object is used to get files in and out of models. It represents a _file handle_.
 
 For models that return a `cog.File` object, the prediction output returned by Cog's built-in HTTP server will be a URL.
@@ -250,6 +269,32 @@ class Predictor(BasePredictor):
         # To output `cog.Path` objects the file needs to exist, so create a temporary file first.
         # This file will automatically be deleted by Cog after it has been returned.
         output_path = Path(tempfile.mkdtemp()) / "upscaled.png"
-        upscaled_image.save(output)
+        upscaled_image.save(output_path)
         return Path(output_path)
 ```
+
+## `List`
+
+The List type is also supported in inputs. It can hold any supported type.
+
+Example for **List[Path]**:
+```py
+class Predictor(BasePredictor):
+   def predict(self, paths: list[Path]) -> str:
+       output_parts = []  # Use a list to collect file contents
+       for path in paths:
+           with open(path) as f:
+             output_parts.append(f.read())
+       return "".join(output_parts)
+```
+The corresponding cog command:
+```bash
+$ echo test1 > 1.txt
+$ echo test2 > 2.txt
+$ cog predict -i paths=@1.txt -i paths=@2.txt
+Running prediction...
+test1
+
+test2
+```
+- Note the repeated inputs with the same name "paths" which constitute the list

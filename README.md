@@ -111,11 +111,9 @@ Hit us up if you're interested in using it or want to collaborate with us. [We'r
 ## Prerequisites
 
 - **macOS, Linux or Windows 11**. Cog works on macOS, Linux and Windows 11 with [WSL 2](docs/wsl2/wsl2.md)
-- **Docker**. Cog uses Docker to create a container for your model. You'll need to [install Docker](https://docs.docker.com/get-docker/) before you can run Cog.
+- **Docker**. Cog uses Docker to create a container for your model. You'll need to [install Docker](https://docs.docker.com/get-docker/) before you can run Cog. If you install Docker Engine instead of Docker Desktop, you will need to [install Buildx](https://docs.docker.com/build/architecture/#buildx) as well.
 
 ## Install
-
-<a id="upgrade"></a>
 
 If you're using macOS, you can install Cog using Homebrew:
 
@@ -138,6 +136,21 @@ make
 sudo make install
 ```
 
+## Upgrade
+
+If you previously installed Cog from a GitHub Releases URL, you can upgrade to the latest version by running the same commands you used to install it:
+
+```console
+sudo curl -o /usr/local/bin/cog -L "https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)"
+sudo chmod +x /usr/local/bin/cog
+```
+
+If you're using macOS and you previously installed Cog with Homebrew, run the following:
+
+```console
+brew upgrade cog
+```
+
 ## Next steps
 
 - [Get started with an example model](docs/getting-started.md)
@@ -148,6 +161,7 @@ sudo make install
 - [Deploy models with Cog](docs/deploy.md)
 - [`cog.yaml` reference](docs/yaml.md) to learn how to define your model's environment
 - [Prediction interface reference](docs/python.md) to learn how the `Predictor` interface works
+- [Training interface reference](docs/training.md) to learn how to add a fine-tuning API to your model
 - [HTTP API reference](docs/http.md) to learn how to use the HTTP API that models serve
 
 ## Need help?
@@ -206,6 +220,10 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
       <td align="center" valign="top" width="14.28%"><a href="https://erbridge.co.uk"><img src="https://avatars.githubusercontent.com/u/1027364?v=4?s=100" width="100px;" alt="F"/><br /><sub><b>F</b></sub></a><br /><a href="https://github.com/replicate/cog/issues?q=author%3Aerbridge" title="Bug reports">🐛</a> <a href="https://github.com/replicate/cog/commits?author=erbridge" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/philandstuff"><img src="https://avatars.githubusercontent.com/u/581269?v=4?s=100" width="100px;" alt="Philip Potter"/><br /><sub><b>Philip Potter</b></sub></a><br /><a href="https://github.com/replicate/cog/issues?q=author%3Aphilandstuff" title="Bug reports">🐛</a> <a href="https://github.com/replicate/cog/commits?author=philandstuff" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/joannejchen"><img src="https://avatars.githubusercontent.com/u/33409024?v=4?s=100" width="100px;" alt="Joanne Chen"/><br /><sub><b>Joanne Chen</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=joannejchen" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="http://technillogue.github.io"><img src="https://avatars.githubusercontent.com/u/945691?v=4?s=100" width="100px;" alt="technillogue"/><br /><sub><b>technillogue</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=technillogue" title="Code">💻</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="http://aroncarroll.com"><img src="https://avatars.githubusercontent.com/u/47144?v=4?s=100" width="100px;" alt="Aron Carroll"/><br /><sub><b>Aron Carroll</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=aron" title="Documentation">📖</a> <a href="https://github.com/replicate/cog/commits?author=aron" title="Code">💻</a> <a href="#ideas-aron" title="Ideas, Planning, & Feedback">🤔</a></td>
     </tr>
   </tbody>
 </table>
