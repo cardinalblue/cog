@@ -17,8 +17,7 @@ from requests.packages.urllib3.util.retry import Retry  # type: ignore
 from .. import schema, types
 from ..files import put_file_to_signed_endpoint
 from ..json import upload_files
-from .eventtypes import (Done, Heartbeat, Log, PredictionOutput,
-                         PredictionOutputType)
+from .eventtypes import Done, Heartbeat, Log, PredictionOutput, PredictionOutputType
 from .probes import ProbeHelper
 from .telemetry import current_trace_context
 from .useragent import get_user_agent

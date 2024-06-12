@@ -11,12 +11,21 @@ from typing import Any, Dict, Iterable, Optional, TextIO, Union
 from sentry_sdk import capture_exception
 
 from ..json import make_encodeable
-from ..predictor import (BasePredictor, get_predict, load_predictor_from_ref,
-                         run_setup)
-from .eventtypes import (Done, Heartbeat, Log, PredictionInput,
-                         PredictionOutput, PredictionOutputType, Shutdown)
-from .exceptions import (CancelationException, FatalWorkerException,
-                         InvalidStateException)
+from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup
+from .eventtypes import (
+    Done,
+    Heartbeat,
+    Log,
+    PredictionInput,
+    PredictionOutput,
+    PredictionOutputType,
+    Shutdown,
+)
+from .exceptions import (
+    CancelationException,
+    FatalWorkerException,
+    InvalidStateException,
+)
 from .helpers import StreamRedirector, WrappedStream
 
 _spawn = multiprocessing.get_context("spawn")

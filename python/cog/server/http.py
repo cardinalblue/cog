@@ -24,28 +24,21 @@ from typing import (
 if TYPE_CHECKING:
     from typing import ParamSpec
 
-import sentry_sdk
 import attrs
+import sentry_sdk
 import structlog
 import uvicorn
-from fastapi import Body, FastAPI, Header, HTTPException, Path, Response
+from fastapi import Body, FastAPI, Header, HTTPException, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from pydantic.error_wrappers import ErrorWrapper
 
 from .. import schema
-from ..errors import PredictorNotSet
-from ..files import upload_file
-from ..json import upload_files
 from ..logging import setup_logging
 from ..predictor import (
     get_input_type,
     get_output_type,
     get_predictor_ref,
-    get_training_input_type,
-    get_training_output_type,
     load_config,
     load_slim_predictor_from_ref,
 )
@@ -54,7 +47,6 @@ from .runner import (
     RunnerBusyError,
     SetupResult,
     SetupTask,
-    UnknownPredictionError,
 )
 from .telemetry import make_trace_context, trace_context
 
@@ -180,74 +172,6 @@ def create_app(
                 return await f(*args, **kwargs)
 
         return wrapped
-
-    if "train" in config:
-        try:
-            trainer_ref = get_predictor_ref(config, "train")
-            trainer = load_slim_predictor_from_ref(trainer_ref, "train")
-            TrainingInputType = get_training_input_type(trainer)
-            TrainingOutputType = get_training_output_type(trainer)
-
-            class TrainingRequest(
-                schema.TrainingRequest.with_types(input_type=TrainingInputType)
-            ):
-                pass
-
-            TrainingResponse = schema.TrainingResponse.with_types(
-                input_type=TrainingInputType, output_type=TrainingOutputType
-            )
-
-            @app.post(
-                "/trainings",
-                response_model=TrainingResponse,
-                response_model_exclude_unset=True,
-            )
-            def train(
-                request: TrainingRequest = Body(default=None),
-                prefer: Optional[str] = Header(default=None),
-                traceparent: Optional[str] = Header(
-                    default=None, include_in_schema=False
-                ),
-                tracestate: Optional[str] = Header(
-                    default=None, include_in_schema=False
-                ),
-            ) -> Any:  # type: ignore
-                with trace_context(make_trace_context(traceparent, tracestate)):
-                    return predict(request, prefer)
-
-            @app.put(
-                "/trainings/{training_id}",
-                response_model=PredictionResponse,
-                response_model_exclude_unset=True,
-            )
-            def train_idempotent(
-                training_id: str = Path(..., title="Training ID"),
-                request: TrainingRequest = Body(..., title="Training Request"),
-                prefer: Optional[str] = Header(default=None),
-                traceparent: Optional[str] = Header(
-                    default=None, include_in_schema=False
-                ),
-                tracestate: Optional[str] = Header(
-                    default=None, include_in_schema=False
-                ),
-            ) -> Any:
-                with trace_context(make_trace_context(traceparent, tracestate)):
-                    return predict_idempotent(training_id, request, prefer)
-
-            @app.post("/trainings/{training_id}/cancel")
-            def cancel_training(
-                training_id: str = Path(..., title="Training ID"),
-            ) -> Any:
-                return cancel(training_id)
-
-        except Exception as e:
-            if isinstance(e, (PredictorNotSet, FileNotFoundError)) and not is_build:
-                pass  # ignore missing train.py for backward compatibility with existing "bad" models in use
-            else:
-                app.state.health = Health.SETUP_FAILED
-                msg = "Error while loading trainer:\n\n" + traceback.format_exc()
-                add_setup_failed_routes(app, started_at, msg)
-                return app
 
     @app.on_event("startup")
     def startup() -> None:

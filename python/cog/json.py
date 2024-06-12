@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from .types import Path
+# from .types import Path
 
 
 def make_encodeable(obj: Any) -> Any:
