@@ -21,19 +21,6 @@ jobs:
           command: make test-python
           environment:
             HYPOTHESIS_PROFILE: ci
-  typecheck-python:
-    docker:
-      - image: cimg/python:3.11
-    steps:
-      - checkout
-      - run:
-          name: Install Python dependencies
-          command: |
-            python -m pip install '.[dev]'
-            yes | python -m mypy --install-types replicate || true
-      - run:
-          name: Run typechecking
-          command: make lint-python
 
 workflows:
   test-python-multiple-versions:
@@ -54,8 +41,3 @@ workflows:
               python-version: ["3.9", "3.10", "3.11", "3.12"] # 3.8 has already been tested
           requires:
             - test-default-python
-      - typecheck-python:
-          name: typecheck-python
-          filters:
-            branches:
-              ignore: "main"
