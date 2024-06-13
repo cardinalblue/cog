@@ -8,6 +8,7 @@ jobs:
         default: "3.8"
     docker:
       - image: cimg/python:<< parameters.python-version >>
+    resource_class: xlarge # 8 core machines to get the hypothesis tests to run in a reasonable time
     steps:
       - checkout
       - run:
