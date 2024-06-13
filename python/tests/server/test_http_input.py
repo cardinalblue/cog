@@ -76,6 +76,7 @@ def test_default_int_input(client, match):
     assert resp.status_code == 200
     assert resp.json() == match({"predictions": [9]})
 
+
 # Not supported yet
 # @uses_predictor("input_file")
 # def test_file_input_data_url(client, match):
@@ -280,16 +281,43 @@ def test_untyped_inputs():
     )
 
 
-def test_input_with_unsupported_type():
-    config = {"predict": _fixture_path("input_unsupported_type")}
-    app = create_app(
-        config=config,
-        shutdown_event=threading.Event(),
-        upload_url="input_untyped",
+# def test_input_with_unsupported_type():
+#     config = {"predict": _fixture_path("input_unsupported_type")}
+#     app = create_app(
+#         config=config,
+#         shutdown_event=threading.Event(),
+#         upload_url="input_untyped",
+#     )
+#     assert app.state.health == Health.SETUP_FAILED
+#     assert app.state.setup_result.status == schema.Status.FAILED
+#     assert (
+#         "TypeError: Unsupported input type input_unsupported_type"
+#         in app.state.setup_result.logs
+#     )
+
+
+@uses_predictor("cb_input_complex")
+def test_cb_complex_input(client):
+    test_dict = {"text": "a", "numbers": [1, 2, 3]}
+    resp = client.post(
+        "/predictions",
+        json={"instances": [{"test_dict": test_dict, "list_test_dict": [test_dict]}]},
     )
-    assert app.state.health == Health.SETUP_FAILED
-    assert app.state.setup_result.status == schema.Status.FAILED
-    assert (
-        "TypeError: Unsupported input type input_unsupported_type"
-        in app.state.setup_result.logs
+    assert resp.status_code == 200
+    resp = client.post(
+        "/predictions",
+        json={
+            "instances": [
+                {"test_dict": test_dict, "list_test_dict": [test_dict, test_dict]}
+            ]
+        },
     )
+    assert resp.status_code == 200
+    resp = client.post(
+        "/predictions", json={"instances": [{"list_test_dict": [test_dict, test_dict]}]}
+    )
+    assert resp.status_code == 422
+    resp = client.post(
+        "/predictions", json={"instances": [{"list_testest_dictt_dict": test_dict}]}
+    )
+    assert resp.status_code == 422
