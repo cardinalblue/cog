@@ -72,6 +72,7 @@ def test_default_int_input(client, match):
     assert resp.status_code == 200
     assert resp.json() == match({"predictions": [9]})
 
+
 # Not supported yet
 # @uses_predictor("input_file")
 # def test_file_input_data_url(client, match):
@@ -227,3 +228,30 @@ def test_untyped_inputs():
 # def test_input_with_unsupported_type():
 #     with pytest.raises(TypeError):
 #         make_client("input_unsupported_type")
+
+
+@uses_predictor("cb_input_complex")
+def test_cb_complex_input(client):
+    test_dict = {"text": "a", "numbers": [1, 2, 3]}
+    resp = client.post(
+        "/predictions",
+        json={"instances": [{"test_dict": test_dict, "list_test_dict": [test_dict]}]},
+    )
+    assert resp.status_code == 200
+    resp = client.post(
+        "/predictions",
+        json={
+            "instances": [
+                {"test_dict": test_dict, "list_test_dict": [test_dict, test_dict]}
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    resp = client.post(
+        "/predictions", json={"instances": [{"list_test_dict": [test_dict, test_dict]}]}
+    )
+    assert resp.status_code == 422
+    resp = client.post(
+        "/predictions", json={"instances": [{"list_testest_dictt_dict": test_dict}]}
+    )
+    assert resp.status_code == 422

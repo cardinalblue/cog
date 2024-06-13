@@ -142,3 +142,14 @@ def test_iterator_of_list_of_complex_output(client, match):
         }
     )
     assert resp.status_code == 200
+
+
+@uses_predictor("cb_output_complex")
+def test_cb_complex_output(client, match):
+    resp = client.post(
+        "/predictions", json={"instances": [{"text": "a", "numbers": [1, 2]}]}
+    )
+    assert resp.json() == match(
+        {"predictions": [{"test_dict": {"text": "a", "numbers": [1, 2]}}]}
+    )
+    assert resp.status_code == 200
