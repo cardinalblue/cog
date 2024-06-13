@@ -276,11 +276,17 @@ class BaseInput(BaseModel):
 
 
 def validate_input_type(type: Type[Any], name: str) -> None:
+    if type in ALLOWED_INPUT_TYPES:
+        return
+
     if type is inspect.Signature.empty:
         raise TypeError(
             f"No input type provided for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}, or a Union or List of those types."
         )
-    elif type not in ALLOWED_INPUT_TYPES:
+    elif inspect.isclass(type) and issubclass(type, BaseModel):
+        for name, parameter in inspect.signature(type).parameters.items():
+            validate_input_type(parameter.annotation, name)
+    else:
         if get_origin(type) in (Union, List, list) or (
             hasattr(types, "UnionType") and get_origin(type) is types.UnionType
         ):  # noqa: E721

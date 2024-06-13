@@ -298,7 +298,8 @@ def test_untyped_inputs():
 
 @uses_predictor("cb_input_complex")
 def test_cb_complex_input(client):
-    test_dict = {"text": "a", "numbers": [1, 2, 3]}
+    sub_dict = {"text": "a", "numbers": [1, 2, 3]}
+    test_dict = {"text": "b", "numbers": [4, 5, 6], "sub_dict": sub_dict}
     resp = client.post(
         "/predictions",
         json={"instances": [{"test_dict": test_dict, "list_test_dict": [test_dict]}]},
