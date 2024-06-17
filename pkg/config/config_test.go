@@ -45,7 +45,7 @@ foo==1.0.0`), 0o644)
 	require.Equal(t, "11.0.3", config.Build.CUDA)
 	require.Equal(t, "8", config.Build.CuDNN)
 
-	requirements, err := config.PythonRequirementsForArch("", "")
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
 	require.NoError(t, err)
 	expected := `--find-links https://download.pytorch.org/whl/torch_stable.html
 torch==1.7.1+cu110
@@ -75,7 +75,7 @@ foo==1.0.0`), 0o644)
 	require.Equal(t, "11.6.2", config.Build.CUDA)
 	require.Equal(t, "8", config.Build.CuDNN)
 
-	requirements, err := config.PythonRequirementsForArch("", "")
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
 	require.NoError(t, err)
 	expected := `--extra-index-url https://download.pytorch.org/whl/cu116
 torch==1.12.1+cu116
@@ -88,8 +88,6 @@ foo==1.0.0`
 func TestPythonRequirementsWorksWithLinesCogCannotParse(t *testing.T) {
 	tmpDir := t.TempDir()
 	err := os.WriteFile(path.Join(tmpDir, "requirements.txt"), []byte(`foo==1.0.0
-# a torch which already has a version
-torch==1.7.1+cu110
 # complex requirements
 fastapi>=0.6,<1
 flask>0.4
@@ -110,11 +108,9 @@ flask>0.4
 	err = config.ValidateAndComplete(tmpDir)
 	require.NoError(t, err)
 
-	requirements, err := config.PythonRequirementsForArch("", "")
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
 	require.NoError(t, err)
 	expected := `foo==1.0.0
-# a torch which already has a version
-torch==1.7.1+cu110
 # complex requirements
 fastapi>=0.6,<1
 flask>0.4
@@ -283,7 +279,7 @@ func TestPythonPackagesForArchTorchGPU(t *testing.T) {
 	require.Equal(t, "11.8", config.Build.CUDA)
 	require.Equal(t, "8", config.Build.CuDNN)
 
-	requirements, err := config.PythonRequirementsForArch("", "")
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
 	require.NoError(t, err)
 	expected := `--find-links https://download.pytorch.org/whl/torch_stable.html
 torch==1.7.1+cu110
@@ -310,7 +306,7 @@ func TestPythonPackagesForArchTorchCPU(t *testing.T) {
 	err := config.ValidateAndComplete("")
 	require.NoError(t, err)
 
-	requirements, err := config.PythonRequirementsForArch("", "")
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
 	require.NoError(t, err)
 	expected := `torch==1.7.1
 torchvision==0.8.2
@@ -341,7 +337,7 @@ func TestPythonPackagesForArchTensorflowGPU(t *testing.T) {
 	// they were built in the same way and both provide GPU support via Nvidia CUDA.
 	// As of December 2022, tensorflow-gpu has been removed and has been replaced with
 	// this new, empty package that generates an error upon installation.
-	requirements, err := config.PythonRequirementsForArch("", "")
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
 	require.NoError(t, err)
 	expected := `tensorflow==2.12.0
 foo==1.0.0`
@@ -420,11 +416,11 @@ func TestBuildRunItemDictYAML(t *testing.T) {
 	yamlString := `
 build:
   run:
-    - command: "echo 'Hello, World!'"
-      mounts:
-        - type: bind
-          id: my-volume
-          target: /mnt/data
+  - command: "echo 'Hello, World!'"
+    mounts:
+    - type: bind
+      id: my-volume
+      target: /mnt/data
 `
 
 	err := yaml.Unmarshal([]byte(yamlString), &buildWrapper)
@@ -473,10 +469,78 @@ func TestBuildRunItemDictJSON(t *testing.T) {
 	require.Equal(t, "/mnt/data", buildWrapper.Build.Run[0].Mounts[0].Target)
 }
 
+func TestTorchWithExistingExtraIndexURL(t *testing.T) {
+	config := &Config{
+		Build: &Build{
+			GPU:           true,
+			PythonVersion: "3.8",
+			PythonPackages: []string{
+				"torch==1.12.1 --extra-index-url=https://download.pytorch.org/whl/cu116",
+			},
+			CUDA: "11.6.2",
+		},
+	}
+	err := config.ValidateAndComplete("")
+	require.NoError(t, err)
+	require.Equal(t, "11.6.2", config.Build.CUDA)
+
+	requirements, err := config.PythonRequirementsForArch("", "", []string{})
+	require.NoError(t, err)
+	expected := `--extra-index-url https://download.pytorch.org/whl/cu116
+torch==1.12.1`
+	require.Equal(t, expected, requirements)
+}
+
 func TestBlankBuild(t *testing.T) {
 	// Naively, this turns into nil, so make sure it's a real build object
 	config, err := FromYAML([]byte(`build:`))
 	require.NoError(t, err)
 	require.NotNil(t, config.Build)
 	require.Equal(t, false, config.Build.GPU)
+}
+
+func TestModelPythonVersionValidation(t *testing.T) {
+	err := ValidateModelPythonVersion("3.8")
+	require.NoError(t, err)
+	err = ValidateModelPythonVersion("3.8.1")
+	require.NoError(t, err)
+	err = ValidateModelPythonVersion("3.7")
+	require.Equal(t, "minimum supported Python version is 3.8. requested 3.7", err.Error())
+	err = ValidateModelPythonVersion("3.7.1")
+	require.Equal(t, "minimum supported Python version is 3.8. requested 3.7.1", err.Error())
+}
+
+func TestSplitPinnedPythonRequirement(t *testing.T) {
+	testCases := []struct {
+		input                  string
+		expectedName           string
+		expectedVersion        string
+		expectedFindLinks      []string
+		expectedExtraIndexURLs []string
+		expectedError          bool
+	}{
+		{"package1==1.0.0", "package1", "1.0.0", nil, nil, false},
+		{"package1==1.0.0+alpha", "package1", "1.0.0+alpha", nil, nil, false},
+		{"--find-links=link1 --find-links=link2 package3==3.0.0", "package3", "3.0.0", []string{"link1", "link2"}, nil, false},
+		{"package4==4.0.0 --extra-index-url=url1 --extra-index-url=url2", "package4", "4.0.0", nil, []string{"url1", "url2"}, false},
+		{"-f link1 --find-links=link2 package5==5.0.0 --extra-index-url=url1 --extra-index-url=url2", "package5", "5.0.0", []string{"link1", "link2"}, []string{"url1", "url2"}, false},
+		{"package6 --find-links=link1 --find-links=link2 --extra-index-url=url1 --extra-index-url=url2", "", "", nil, nil, true},
+		{"invalid package", "", "", nil, nil, true},
+		{"package8==", "", "", nil, nil, true},
+		{"==8.0.0", "", "", nil, nil, true},
+	}
+
+	for _, tc := range testCases {
+		name, version, findLinks, extraIndexURLs, err := splitPinnedPythonRequirement(tc.input)
+
+		if tc.expectedError {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedName, name, "input: "+tc.input)
+			require.Equal(t, tc.expectedVersion, version, "input: "+tc.input)
+			require.Equal(t, tc.expectedFindLinks, findLinks, "input: "+tc.input)
+			require.Equal(t, tc.expectedExtraIndexURLs, extraIndexURLs, "input: "+tc.input)
+		}
+	}
 }

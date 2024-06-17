@@ -7,7 +7,20 @@ import responses
 from PIL import Image
 from responses import matchers
 
-from .conftest import uses_predictor, uses_predictor_with_client_options
+from .conftest import (
+    make_client,
+    uses_predictor,
+    uses_predictor_with_client_options,
+    uses_trainer,
+)
+
+
+def test_setup_healthcheck():
+    client = make_client(fixture_name="slow_setup")
+    resp = client.get("/health-check")
+    data = resp.json()
+    assert data["status"] == "STARTING"
+    assert data["setup"] == {}
 
 
 @uses_predictor("setup")
@@ -145,7 +158,7 @@ def test_openapi_specification(client, static_schema):
             "input_with_default": {
                 "title": "Input With Default",
                 "type": "integer",
-                "default": 10,
+                "default": -10,
                 "x-order": 2,
             },
             # "path": {
@@ -339,6 +352,47 @@ def test_openapi_specification_with_int_choices(client, static_schema):
     }
 
 
+# @uses_trainer("train.py:train")
+# def test_train_openapi_specification(client):
+#     resp = client.get("/openapi.json")
+#     assert resp.status_code == 200
+
+#     schema = resp.json()
+#     assert schema["openapi"] == "3.0.2"
+#     assert schema["info"] == {"title": "Cog", "version": "0.1.0"}
+
+#     assert schema["components"]["schemas"]["TrainingInput"] == {
+#         "title": "TrainingInput",
+#         "type": "object",
+#         "properties": {
+#             "n": {
+#                 "type": "integer",
+#                 "x-order": 0,
+#                 "title": "N",
+#                 "description": "Dimension of weights to generate",
+#             },
+#         },
+#         "required": [
+#             "n",
+#         ],
+#     }
+
+#     assert schema["components"]["schemas"]["TrainingOutput"] == {
+#         "title": "TrainingOutput",
+#         "type": "object",
+#         "properties": {
+#             "weights": {
+#                 "type": "string",
+#                 "format": "uri",
+#                 "title": "Weights",
+#             },
+#         },
+#         "required": [
+#             "weights",
+#         ],
+#     }
+
+
 @uses_predictor("yield_strings")
 def test_yielding_strings_from_generator_predictors(client, match):
     resp = client.post("/predictions", json={"instances": [{}]})
@@ -350,10 +404,11 @@ def test_yielding_strings_from_generator_predictors(client, match):
 def test_yielding_strings_from_concatenate_iterator(client, match):
     resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"predictions": [["foo", "bar", "baz"]]})
+    assert resp.json() == match(
+        {"predictions": [["foo", "bar", "baz"]]}
+    )
 
 
-# Not supported yet
 # @uses_predictor("yield_strings_file_input")
 # def test_yielding_strings_from_generator_predictors_file_input(client, match):
 #     resp = client.post(
@@ -369,7 +424,6 @@ def test_yielding_strings_from_concatenate_iterator(client, match):
 #     )
 
 
-# Not supported yet
 # @uses_predictor("yield_files")
 # def test_yielding_files_from_generator_predictors(client):
 #     resp = client.post("/predictions")
@@ -498,9 +552,78 @@ def test_yielding_strings_from_concatenate_iterator(client, match):
 #         time.sleep(0.1)
 #         n += 1
 
+
+# # End-to-end test for passing tracing headers on to downstream services.
+# @responses.activate
+# @uses_predictor_with_client_options(
+#     "output_file", upload_url="https://example.com/upload"
+# )
+# def test_asynchronous_prediction_endpoint_with_trace_context(client, match):
+#     webhook = responses.post(
+#         "https://example.com/webhook",
+#         match=[
+#             matchers.json_params_matcher(
+#                 {
+#                     "id": "12345abcde",
+#                     "status": "succeeded",
+#                     "output": "https://example.com/upload/file",
+#                 },
+#                 strict_match=False,
+#             ),
+#             matchers.header_matcher(
+#                 {
+#                     "traceparent": "traceparent-123",
+#                     "tracestate": "tracestate-123",
+#                 },
+#                 strict_match=False,
+#             ),
+#         ],
+#         status=200,
+#     )
+#     uploader = responses.put(
+#         "https://example.com/upload/file",
+#         match=[
+#             matchers.header_matcher(
+#                 {
+#                     "traceparent": "traceparent-123",
+#                     "tracestate": "tracestate-123",
+#                 },
+#                 strict_match=False,
+#             ),
+#         ],
+#         status=200,
+#     )
+
+#     resp = client.post(
+#         "/predictions",
+#         json={
+#             "id": "12345abcde",
+#             "input": {},
+#             "webhook": "https://example.com/webhook",
+#             "webhook_events_filter": ["completed"],
+#         },
+#         headers={
+#             "Prefer": "respond-async",
+#             "traceparent": "traceparent-123",
+#             "tracestate": "tracestate-123",
+#         },
+#     )
+#     assert resp.status_code == 202
+
+#     assert resp.json() == match(
+#         {"status": "processing", "output": None, "started_at": mock.ANY}
+#     )
+#     assert resp.json()["started_at"] is not None
+
+#     n = 0
+#     while webhook.call_count < 1 and n < 10:
+#         time.sleep(0.1)
+#         n += 1
+
+#     assert uploader.call_count == 1
 #     assert webhook.call_count == 1
 
-# Not supported yet
+
 # @uses_predictor("sleep")
 # def test_prediction_cancel(client):
 #     resp = client.post("/predictions/123/cancel")
@@ -520,12 +643,11 @@ def test_yielding_strings_from_concatenate_iterator(client, match):
 #     assert resp.status_code == 200
 
 
-# Not supported yet
-# @uses_predictor_with_client_options(
-#     "setup_weights",
-#     env={"COG_WEIGHTS": "data:text/plain; charset=utf-8;base64,aGVsbG8="},
-# )
-# def test_weights_are_read_from_environment_variables(client, match):
-#     resp = client.post("/predictions")
-#     assert resp.status_code == 200
-#     assert resp.json() == match({"status": "succeeded", "output": "hello"})
+@uses_predictor_with_client_options(
+    "setup_weights",
+    env={"COG_WEIGHTS": "data:text/plain; charset=utf-8;base64,aGVsbG8="},
+)
+def test_weights_are_read_from_environment_variables(client, match):
+    resp = client.post("/predictions", json={"instances": [{}]})
+    assert resp.status_code == 200
+    assert resp.json() == match({"predictions": ["hello"]})

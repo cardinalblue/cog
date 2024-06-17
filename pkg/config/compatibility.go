@@ -150,7 +150,8 @@ func compatibleCuDNNsForCUDA(cuda string) []string {
 }
 
 func defaultCUDA() string {
-	return latestTF().CUDA
+	// TODO: change this to latestTF().CUDA once replicate supports >= 12 everywhere
+	return "11.8"
 }
 
 func latestCUDAFrom(cudas []string) string {
@@ -206,26 +207,6 @@ func latestCuDNNForCUDA(cuda string) (string, error) {
 	return cuDNNs[0], nil
 }
 
-func latestTF() TFCompatibility {
-	var latest *TFCompatibility
-	for _, compat := range TFCompatibilityMatrix {
-		compat := compat
-		if latest == nil {
-			latest = &compat
-		} else {
-			greater, err := versionGreater(compat.TF, latest.TF)
-			if err != nil {
-				// should never happen
-				panic(fmt.Sprintf("Invalid tensorflow version: %s", err))
-			}
-			if greater {
-				latest = &compat
-			}
-		}
-	}
-	return *latest
-}
-
 func versionGreater(a string, b string) (bool, error) {
 	// TODO(andreas): use library
 	aVer, err := version.NewVersion(a)
@@ -251,7 +232,8 @@ func CUDABaseImageFor(cuda string, cuDNN string) (string, error) {
 func tfGPUPackage(ver string, cuda string) (name string, cpuVersion string, err error) {
 	for _, compat := range TFCompatibilityMatrix {
 		if compat.TF == ver && version.Equal(compat.CUDA, cuda) {
-			return splitPinnedPythonRequirement(compat.TFGPUPackage)
+			name, cpuVersion, _, _, err = splitPinnedPythonRequirement(compat.TFGPUPackage)
+			return name, cpuVersion, err
 		}
 	}
 	// We've already warned user if they're doing something stupid in validateAndCompleteCUDA(), so fail silently

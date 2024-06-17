@@ -24,6 +24,7 @@ import (
 )
 
 var (
+	envFlags   []string
 	inputFlags []string
 	outPath    string
 )
@@ -45,10 +46,14 @@ the prediction on that.`,
 	}
 
 	addUseCudaBaseImageFlag(cmd)
+	addUseCogBaseImageFlag(cmd)
 	addBuildProgressOutputFlag(cmd)
+	addDockerfileFlag(cmd)
+	addGpusFlag(cmd)
 
 	cmd.Flags().StringArrayVarP(&inputFlags, "input", "i", []string{}, "Inputs, in the form name=value. if value is prefixed with @, then it is read from a file on disk. E.g. -i path=@image.jpg")
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "Output path")
+	cmd.Flags().StringArrayVarP(&envFlags, "env", "e", []string{}, "Environment variables, in the form name=value")
 
 	return cmd
 }
@@ -56,7 +61,7 @@ the prediction on that.`,
 func cmdPredict(cmd *cobra.Command, args []string) error {
 	imageName := ""
 	volumes := []docker.Volume{}
-	gpus := ""
+	gpus := gpusFlag
 
 	if len(args) == 0 {
 		// Build image
@@ -66,7 +71,7 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		if imageName, err = image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, buildProgressOutput); err != nil {
+		if imageName, err = image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, buildUseCogBaseImage, buildProgressOutput); err != nil {
 			return err
 		}
 
@@ -76,13 +81,18 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 			Destination: "/src",
 		})
 
-		if cfg.Build.GPU {
+		if gpus == "" && cfg.Build.GPU {
 			gpus = "all"
 		}
 
 	} else {
 		// Use existing image
 		imageName = args[0]
+
+		// If the image name contains '=', then it's probably a mistake
+		if strings.Contains(imageName, "=") {
+			return fmt.Errorf("Invalid image name '%s'. Did you forget `-i`?", imageName)
+		}
 
 		exists, err := docker.ImageExists(imageName)
 		if err != nil {
@@ -98,7 +108,7 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if conf.Build.GPU {
+		if gpus == "" && conf.Build.GPU {
 			gpus = "all"
 		}
 	}
@@ -110,6 +120,7 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 		GPUs:    gpus,
 		Image:   imageName,
 		Volumes: volumes,
+		Env:     envFlags,
 	})
 
 	go func() {
@@ -125,13 +136,16 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 	}()
 
 	if err := predictor.Start(os.Stderr); err != nil {
-		if gpus != "" && errors.Is(err, docker.ErrMissingDeviceDriver) {
+		// Only retry if we're using a GPU but but the user didn't explicitly select a GPU with --gpus
+		// If the user specified the wrong GPU, they are explicitly selecting a GPU and they'll want to hear about it
+		if gpus == "all" && errors.Is(err, docker.ErrMissingDeviceDriver) {
 			console.Info("Missing device driver, re-trying without GPU")
 
 			_ = predictor.Stop()
 			predictor = predict.NewPredictor(docker.RunOptions{
 				Image:   imageName,
 				Volumes: volumes,
+				Env:     envFlags,
 			})
 
 			if err := predictor.Start(os.Stderr); err != nil {
@@ -172,7 +186,7 @@ func predictIndividualInputs(predictor predict.Predictor, inputFlags []string, o
 
 	// Generate output depending on type in schema
 	var out []byte
-	responseSchema := schema.Paths["/predictions"].Post.Responses["200"].Value.Content["application/json"].Schema.Value
+	responseSchema := schema.Paths.Value("/predictions").Post.Responses.Value("200").Value.Content["application/json"].Schema.Value
 	outputSchema := responseSchema.Properties["output"].Value
 
 	// Multiple outputs!
@@ -276,7 +290,7 @@ func handleMultipleFileOutput(prediction *predict.Response, outputSchema *openap
 }
 
 func parseInputFlags(inputs []string) (predict.Inputs, error) {
-	keyVals := map[string]string{}
+	keyVals := map[string][]string{}
 	for _, input := range inputs {
 		var name, value string
 
@@ -293,7 +307,8 @@ func parseInputFlags(inputs []string) (predict.Inputs, error) {
 			value = value[1 : len(value)-1]
 		}
 
-		keyVals[name] = value
+		// Append new values to the slice associated with the key
+		keyVals[name] = append(keyVals[name], value)
 	}
 
 	return predict.NewInputs(keyVals), nil

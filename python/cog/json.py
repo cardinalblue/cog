@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from .types import Path
+# from .types import Path
 
 
 def make_encodeable(obj: Any) -> Any:
@@ -29,11 +29,9 @@ def make_encodeable(obj: Any) -> Any:
         return obj.isoformat()
     try:
         import numpy as np  # type: ignore
-
-        has_numpy = True
     except ImportError:
-        has_numpy = False
-    if has_numpy:
+        pass
+    else:
         if isinstance(obj, np.integer):
             return int(obj)
         if isinstance(obj, np.floating):

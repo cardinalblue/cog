@@ -68,11 +68,16 @@ var typeToExtension = map[string]string{
 	"image/vnd.microsoft.icon": ".ico",
 	"image/webp":               ".webp",
 
+	"model/gltf-binary": ".glb",
+	"model/mtl":         ".mtl",
+	"model/obj":         ".obj",
+
 	"text/calendar":   ".ics",
 	"text/css":        ".css",
 	"text/csv":        ".csv",
 	"text/html":       ".html",
 	"text/javascript": ".js",
+	"text/markdown":   ".md",
 	"text/plain":      ".txt",
 
 	"video/3gpp":      ".3gp",

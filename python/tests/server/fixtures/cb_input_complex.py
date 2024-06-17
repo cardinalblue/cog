@@ -5,9 +5,15 @@ from pydantic import BaseModel
 from cog import BasePredictor
 
 
+class SubDict(BaseModel):
+    text: str
+    numbers: List[int]
+
+
 class TestDict(BaseModel):
     text: str
     numbers: List[int]
+    sub_dict: SubDict
 
 
 class Predictor(BasePredictor):

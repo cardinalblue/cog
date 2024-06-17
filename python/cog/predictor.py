@@ -3,34 +3,66 @@ import importlib.util
 import inspect
 import io
 import os.path
+import sys
+import types
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Type,
+    Union,
+    cast,
+)
+from unittest.mock import patch
+
+import structlog
+
+import cog.code_xforms as code_xforms
 
 try:
     from typing import get_args, get_origin
 except ImportError:  # Python < 3.8
-    from typing_compat import get_args, get_origin
+    from typing_compat import get_args, get_origin  # type: ignore
 
 import yaml
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
+
 # Added in Python 3.9. Can be from typing if we drop support for <3.9
 from typing_extensions import Annotated
 
 from .errors import ConfigDoesNotExist, PredictorNotSet
-from .types import File as CogFile
-from .types import Input
+from .types import (
+    File as CogFile,
+)
+from .types import (
+    Input,
+    URLPath,
+)
 from .types import Path as CogPath
-from .types import URLFile, URLPath
+from .types import Secret as CogSecret
 
-ALLOWED_INPUT_TYPES = [str, int, float, bool]
-NOT_ALLOWED_INPUT_TYPES = [CogFile, CogPath, URLPath, URLFile]
+log = structlog.get_logger("cog.server.predictor")
+
+ALLOWED_INPUT_TYPES: List[Type[Any]] = [
+    str,
+    int,
+    float,
+    bool,
+    # CogFile,
+    # CogPath,
+    CogSecret,
+]
 
 
 class BasePredictor(ABC):
-    def setup(self, weights: Optional[Union[CogFile, CogPath]] = None) -> None:
+    def setup(self, weights: Optional[Union[CogFile, CogPath, str]] = None) -> None:
         """
         An optional method to prepare the model so multiple predictions run efficiently.
         """
@@ -52,7 +84,7 @@ def run_setup(predictor: BasePredictor) -> None:
         predictor.setup()
         return
 
-    weights: Union[io.IOBase, Path, None]
+    weights: Union[io.IOBase, Path, str, None]
 
     weights_url = os.environ.get("COG_WEIGHTS")
     weights_path = "weights"
@@ -60,23 +92,28 @@ def run_setup(predictor: BasePredictor) -> None:
     # TODO: Cog{File,Path}.validate(...) methods accept either "real"
     # paths/files or URLs to those things. In future we can probably tidy this
     # up a little bit.
+    # TODO: CogFile/CogPath should have subclasses for each of the subtypes
     if weights_url:
         if weights_type == CogFile:
-            weights = CogFile.validate(weights_url)
+            weights = cast(CogFile, CogFile.validate(weights_url))
         elif weights_type == CogPath:
-            weights = CogPath.validate(weights_url)
+            # TODO: So this can be a url. evil!
+            weights = cast(CogPath, CogPath.validate(weights_url))
+        # allow people to download weights themselves
+        elif weights_type == str:
+            weights = weights_url
         else:
             raise ValueError(
-                f"Predictor.setup() has an argument 'weights' of type {weights_type}, but only File and Path are supported"
+                f"Predictor.setup() has an argument 'weights' of type {weights_type}, but only File, Path and str are supported"
             )
     elif os.path.exists(weights_path):
         if weights_type == CogFile:
-            weights = open(weights_path, "rb")
+            weights = cast(CogFile, open(weights_path, "rb"))
         elif weights_type == CogPath:
             weights = CogPath(weights_path)
         else:
             raise ValueError(
-                f"Predictor.setup() has an argument 'weights' of type {weights_type}, but only File and Path are supported"
+                f"Predictor.setup() has an argument 'weights' of type {weights_type}, but only File, Path and str are supported"
             )
     else:
         weights = None
@@ -84,7 +121,7 @@ def run_setup(predictor: BasePredictor) -> None:
     predictor.setup(weights=weights)
 
 
-def get_weights_type(setup_function: Callable) -> Optional[Any]:
+def get_weights_type(setup_function: Callable[[Any], None]) -> Optional[Any]:
     signature = inspect.signature(setup_function)
     if "weights" not in signature.parameters:
         return None
@@ -98,7 +135,9 @@ def get_weights_type(setup_function: Callable) -> Optional[Any]:
 
 
 def run_prediction(
-    predictor: BasePredictor, inputs: Dict[Any, Any], cleanup_functions: List[Callable]
+    predictor: BasePredictor,
+    inputs: Dict[Any, Any],
+    cleanup_functions: List[Callable[[], None]],
 ) -> Any:
     """
     Run the predictor on the inputs, and append resulting paths
@@ -148,18 +187,66 @@ def get_predictor_ref(config: Dict[str, Any], mode: str = "predict") -> str:
     return config[mode]
 
 
-def load_predictor_from_ref(ref: str) -> BasePredictor:
-    module_path, class_name = ref.split(":", 1)
-    module_name = os.path.basename(module_path).split(".py", 1)[0]
+def load_full_predictor_from_file(
+    module_path: str, module_name: str
+) -> types.ModuleType:
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
+    # Remove any sys.argv while importing predictor to avoid conflicts when
+    # user code calls argparse.Parser.parse_args in production
+    with patch("sys.argv", sys.argv[:1]):
+        spec.loader.exec_module(module)
+    return module
+
+
+def load_slim_predictor_from_file(
+    module_path: str, class_name: str, method_name: str
+) -> Optional[types.ModuleType]:
+    with open(module_path, encoding="utf-8") as file:
+        source_code = file.read()
+    stripped_source = code_xforms.strip_model_source_code(
+        source_code, class_name, method_name
+    )
+    module = code_xforms.load_module_from_string(uuid.uuid4().hex, stripped_source)
+    return module
+
+
+def get_predictor(module: types.ModuleType, class_name: str) -> Any:
     predictor = getattr(module, class_name)
     # It could be a class or a function
     if inspect.isclass(predictor):
         return predictor()
+    return predictor
+
+
+def load_slim_predictor_from_ref(ref: str, method_name: str) -> BasePredictor:
+    module_path, class_name = ref.split(":", 1)
+    module_name = os.path.basename(module_path).split(".py", 1)[0]
+    module = None
+    try:
+        if sys.version_info >= (3, 9):
+            module = load_slim_predictor_from_file(module_path, class_name, method_name)
+            if not module:
+                log.debug(f"[{module_name}] fast loader returned None")
+        else:
+            log.debug(f"[{module_name}] cannot use fast loader as current Python <3.9")
+    except Exception as e:
+        log.debug(f"[{module_name}] fast loader failed: {e}")
+    finally:
+        if not module:
+            log.debug(f"[{module_name}] falling back to slow loader")
+            module = load_full_predictor_from_file(module_path, module_name)
+    predictor = get_predictor(module, class_name)
+    return predictor
+
+
+def load_predictor_from_ref(ref: str) -> BasePredictor:
+    module_path, class_name = ref.split(":", 1)
+    module_name = os.path.basename(module_path).split(".py", 1)[0]
+    module = load_full_predictor_from_file(module_path, module_name)
+    predictor = get_predictor(module, class_name)
     return predictor
 
 
@@ -188,28 +275,30 @@ class BaseInput(BaseModel):
                     pass
 
 
-def get_predict(predictor: Any) -> Callable:
-    if hasattr(predictor, "predict"):
-        return predictor.predict
-    return predictor
+def validate_input_type(type: Type[Any], name: str) -> None:
+    if type in ALLOWED_INPUT_TYPES:
+        return
+
+    if type is inspect.Signature.empty:
+        raise TypeError(
+            f"No input type provided for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}, or a Union or List of those types."
+        )
+    elif inspect.isclass(type) and issubclass(type, BaseModel):
+        for name, parameter in inspect.signature(type).parameters.items():
+            validate_input_type(parameter.annotation, name)
+    else:
+        if get_origin(type) in (Union, List, list) or (
+            hasattr(types, "UnionType") and get_origin(type) is types.UnionType
+        ):  # noqa: E721
+            for t in get_args(type):
+                validate_input_type(t, name)
+        else:
+            raise TypeError(
+                f"Unsupported input type {human_readable_type_name(type)} for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}, or a Union or List of those types."
+            )
 
 
-def get_input_type(predictor: BasePredictor) -> Type[BaseInput]:
-    """
-    Creates a Pydantic Input model from the arguments of a Predictor's predict() method.
-
-    class Predictor(BasePredictor):
-        def predict(self, text: str):
-            ...
-
-    programmatically creates a model like this:
-
-    class Input(BaseModel):
-        text: str
-    """
-
-    predict = get_predict(predictor)
-    signature = inspect.signature(predict)
+def get_input_create_model_kwargs(signature: inspect.Signature) -> Dict[str, Any]:
     create_model_kwargs = {}
 
     order = 0
@@ -217,14 +306,7 @@ def get_input_type(predictor: BasePredictor) -> Type[BaseInput]:
     for name, parameter in signature.parameters.items():
         InputType = parameter.annotation
 
-        if InputType is inspect.Signature.empty:
-            raise TypeError(
-                f"No input type provided for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}."
-            )
-        elif InputType in NOT_ALLOWED_INPUT_TYPES:
-            raise TypeError(
-                f"Unsupported input type {human_readable_type_name(InputType)} for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}."
-            )
+        validate_input_type(InputType, name)
 
         # if no default is specified, create an empty, required input
         if parameter.default is inspect.Signature.empty:
@@ -262,13 +344,39 @@ def get_input_type(predictor: BasePredictor) -> Type[BaseInput]:
 
         create_model_kwargs[name] = (InputType, default)
 
+    return create_model_kwargs
+
+
+def get_predict(predictor: Any) -> Callable[..., Any]:
+    if hasattr(predictor, "predict"):
+        return predictor.predict
+    return predictor
+
+
+def get_input_type(predictor: BasePredictor) -> Type[BaseInput]:
+    """
+    Creates a Pydantic Input model from the arguments of a Predictor's predict() method.
+
+    class Predictor(BasePredictor):
+        def predict(self, text: str):
+            ...
+
+    programmatically creates a model like this:
+
+    class Input(BaseModel):
+        text: str
+    """
+
+    predict = get_predict(predictor)
+    signature = inspect.signature(predict)
+
     return create_model(
         "Input",
         __config__=None,
         __base__=BaseInput,
         __module__=__name__,
         __validators__=None,
-        **create_model_kwargs,
+        **get_input_create_model_kwargs(signature),
     )  # type: ignore
 
 
@@ -276,8 +384,10 @@ def get_output_type(predictor: BasePredictor) -> Type[BaseModel]:
     """
     Creates a Pydantic Output model from the return type annotation of a Predictor's predict() method.
     """
+
     predict = get_predict(predictor)
     signature = inspect.signature(predict)
+    OutputType: Type[BaseModel]
     if signature.return_annotation is inspect.Signature.empty:
         raise TypeError(
             """You must set an output type. If your model can return multiple output types, you can explicitly set `Any` as the output type.
@@ -300,19 +410,123 @@ For example:
     if get_origin(OutputType) is Iterator:
         # Annotated allows us to attach Field annotations to the list, which we use to mark that this is an iterator
         # https://pydantic-docs.helpmanual.io/usage/schema/#typingannotated-fields
-        OutputType = Annotated[List[get_args(OutputType)[0]], Field(**{"x-cog-array-type": "iterator"})]  # type: ignore
+        field = Field(**{"x-cog-array-type": "iterator"})  # type: ignore
+        OutputType: Type[BaseModel] = Annotated[List[get_args(OutputType)[0]], field]  # type: ignore
 
-    if not hasattr(OutputType, "__name__") or OutputType.__name__ != "Output":
-        # Wrap the type in a model called "Output" so it is a consistent name in the OpenAPI schema
+    name = OutputType.__name__ if hasattr(OutputType, "__name__") else ""
+
+    if name == "Output":
+        return OutputType
+
+    # We wrap the OutputType in an Output class to
+    # ensure consistent naming of the interface in the schema.
+    #
+    # NOTE: If the OutputType.__name__ is "TrainingOutput" then cannot use
+    # `__root__` here because this will create a reference for the Object.
+    # e.g.
+    #   {'title': 'Output', '$ref': '#/definitions/TrainingOutput' ... }
+    #
+    # And this reference may conflict with other objects at which
+    # point the item will be namespaced and break our parsing. e.g.
+    #   {'title': 'Output', '$ref': '#/definitions/predict_TrainingOutput' ... }
+    #
+    # So we work around this by inheriting from the original class rather
+    # than using "__root__".
+    if name == "TrainingOutput":
+
+        class Output(OutputType):  # type: ignore
+            pass
+
+        return Output
+    else:
+
         class Output(BaseModel):
             __root__: OutputType  # type: ignore
 
-        OutputType = Output
-
-    return OutputType
+        return Output
 
 
-def human_readable_type_name(t: Type) -> str:
+def get_train(predictor: Any) -> Callable[..., Any]:
+    if hasattr(predictor, "train"):
+        return predictor.train
+    return predictor
+
+
+def get_training_input_type(predictor: BasePredictor) -> Type[BaseInput]:
+    """
+    Creates a Pydantic Input model from the arguments of a Predictor's train() method.
+
+    def train(self, text: str):
+        ...
+
+    programmatically creates a model like this:
+
+    class TrainingInput(BaseModel):
+        text: str
+    """
+
+    train = get_train(predictor)
+    signature = inspect.signature(train)
+
+    return create_model(
+        "TrainingInput",
+        __config__=None,
+        __base__=BaseInput,
+        __module__=__name__,
+        __validators__=None,
+        **get_input_create_model_kwargs(signature),
+    )  # type: ignore
+
+
+def get_training_output_type(predictor: BasePredictor) -> Type[BaseModel]:
+    """
+    Creates a Pydantic Output model from the return type annotation of a train() method.
+    """
+
+    train = get_train(predictor)
+    signature = inspect.signature(train)
+
+    if signature.return_annotation is inspect.Signature.empty:
+        raise TypeError(
+            """You must set an output type. If your model can return multiple output types, you can explicitly set `Any` as the output type.
+
+For example:
+
+    from typing import Any
+
+    def train(
+        self,
+        n: int
+    ) -> Any:
+        ...
+"""
+        )
+    else:
+        TrainingOutputType = signature.return_annotation
+
+    name = (
+        TrainingOutputType.__name__ if hasattr(TrainingOutputType, "__name__") else ""
+    )
+    # We wrap the OutputType in a TrainingOutput class to
+    # ensure consistent naming of the interface in the schema
+    # See comment in get_output_type for more info.
+    if name == "TrainingOutput":
+        return TrainingOutputType
+
+    if name == "Output":
+
+        class TrainingOutput(TrainingOutputType):  # type: ignore
+            pass
+
+        return TrainingOutput
+
+    class TrainingOutput(BaseModel):
+        __root__: TrainingOutputType  # type: ignore
+
+    return TrainingOutput
+
+
+def human_readable_type_name(t: Type[Any]) -> str:
     """
     Generates a useful-for-humans label for a type. For builtin types, it's just the class name (eg "str" or "int"). For other types, it includes the module (eg "pathlib.Path" or "cog.File").
 
@@ -330,5 +544,5 @@ def human_readable_type_name(t: Type) -> str:
         return str(t)
 
 
-def readable_types_list(type_list: List[Type]) -> str:
+def readable_types_list(type_list: List[Type[Any]]) -> str:
     return ", ".join(human_readable_type_name(t) for t in type_list)

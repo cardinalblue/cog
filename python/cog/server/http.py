@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import functools
 import logging
 import os
 import signal
@@ -6,28 +8,47 @@ import socket
 import sys
 import textwrap
 import threading
+import traceback
+from datetime import datetime, timezone
 from enum import Enum, auto, unique
-from typing import Any, Callable, Dict, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Optional,
+    TypeVar,
+)
 
+if TYPE_CHECKING:
+    from typing import ParamSpec
+
+import attrs
 import sentry_sdk
 import structlog
 import uvicorn
-from anyio import CapacityLimiter
-from anyio.lowlevel import RunVar
-from fastapi import Body, FastAPI, Header, HTTPException, Path, Response
+from fastapi import Body, FastAPI, Header, HTTPException, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from pydantic.error_wrappers import ErrorWrapper
 
 from .. import schema
-from ..files import upload_file
-from ..json import upload_files
 from ..logging import setup_logging
-from ..predictor import (get_input_type, get_output_type, get_predictor_ref,
-                         load_config, load_predictor_from_ref)
-from .runner import PredictionRunner, RunnerBusyError, UnknownPredictionError
+from ..predictor import (
+    get_input_type,
+    get_output_type,
+    get_predictor_ref,
+    load_config,
+    load_slim_predictor_from_ref,
+)
+from .runner import (
+    PredictionRunner,
+    RunnerBusyError,
+    SetupResult,
+    SetupTask,
+)
+from .telemetry import make_trace_context, trace_context
 
 log = structlog.get_logger("cog.server.http")
 
@@ -60,51 +81,117 @@ class Health(Enum):
     SETUP_FAILED = auto()
 
 
+class MyState:
+    health: Health
+    setup_task: Optional[SetupTask]
+    setup_result: Optional[SetupResult]
+
+
+class MyFastAPI(FastAPI):
+    # TODO: not, strictly speaking, legal
+    # https://github.com/microsoft/pyright/issues/5933
+    # but it'd need a FastAPI patch to fix
+    state: MyState  # type: ignore
+
+
+def add_setup_failed_routes(app: MyFastAPI, started_at: datetime, msg: str) -> None:
+    print(msg)
+    result = SetupResult(
+        started_at=started_at,
+        completed_at=datetime.now(tz=timezone.utc),
+        logs=msg,
+        status=schema.Status.FAILED,
+    )
+    app.state.setup_result = result
+    app.state.health = Health.SETUP_FAILED
+
+    @app.get("/health-check")
+    async def healthcheck_startup_failed() -> Any:
+        setup = attrs.asdict(app.state.setup_result)
+        return jsonable_encoder({"status": app.state.health.name, "setup": setup})
+
+
 def create_app(
     config: Dict[str, Any],
     shutdown_event: Optional[threading.Event],
     threads: int = 1,
     upload_url: Optional[str] = None,
     mode: str = "predict",
-) -> FastAPI:
-    app = FastAPI(
+    is_build: bool = False,
+) -> MyFastAPI:
+    app = MyFastAPI(
         title="Cog",  # TODO: mention model name?
         # version=None # TODO
     )
 
     app.state.health = Health.STARTING
+    app.state.setup_task = None
     app.state.setup_result = None
-    app.state.setup_result_payload = None
+    started_at = datetime.now(tz=timezone.utc)
 
-    predictor_ref = get_predictor_ref(config, mode)
+    # shutdown is needed no matter what happens
+    @app.post("/shutdown")
+    async def start_shutdown() -> Any:
+        log.info("shutdown requested via http")
+        if shutdown_event is not None:
+            shutdown_event.set()
+        return JSONResponse({}, status_code=200)
+
+    try:
+        predictor_ref = get_predictor_ref(config, mode)
+        predictor = load_slim_predictor_from_ref(predictor_ref, "predict")
+        InputType = get_input_type(predictor)
+        OutputType = get_output_type(predictor)
+    except Exception:
+        msg = "Error while loading predictor:\n\n" + traceback.format_exc()
+        add_setup_failed_routes(app, started_at, msg)
+        return app
 
     runner = PredictionRunner(
         predictor_ref=predictor_ref,
         shutdown_event=shutdown_event,
         upload_url=upload_url,
     )
-    # TODO: avoid loading predictor code in this process
-    predictor = load_predictor_from_ref(predictor_ref)
 
-    InputType = get_input_type(predictor)
-    OutputType = get_output_type(predictor)
+    class PredictionRequest(schema.PredictionRequest.with_types(input_type=InputType)):
+        pass
 
     NewPredictionRequest = schema.NewPredictionRequest.with_types(input_type=InputType)
     NewPredictionResponse = schema.NewPredictionResponse.with_types(output_type=OutputType)
 
+    http_semaphore = asyncio.Semaphore(threads)
+
+    if TYPE_CHECKING:
+        P = ParamSpec("P")
+        T = TypeVar("T")
+
+    def limited(f: "Callable[P, Awaitable[T]]") -> "Callable[P, Awaitable[T]]":
+        @functools.wraps(f)
+        async def wrapped(*args: "P.args", **kwargs: "P.kwargs") -> "T":
+            async with http_semaphore:
+                return await f(*args, **kwargs)
+
+        return wrapped
+
     @app.on_event("startup")
     def startup() -> None:
-        # https://github.com/tiangolo/fastapi/issues/4221
-        RunVar("_default_thread_limiter").set(CapacityLimiter(threads))  # type: ignore
-
-        app.state.setup_result = runner.setup()
+        # check for early setup failures
+        if (
+            app.state.setup_result
+            and app.state.setup_result.status == schema.Status.FAILED
+        ):
+            if not args.await_explicit_shutdown:  # signal shutdown if interactive run
+                if shutdown_event is not None:
+                    shutdown_event.set()
+        else:
+            app.state.setup_task = runner.setup()
 
     @app.on_event("shutdown")
     def shutdown() -> None:
         runner.shutdown()
 
     @app.get("/")
-    def root() -> Any:
+    async def root() -> Any:
         return {
             # "cog_version": "", # TODO
             "docs_url": "/docs",
@@ -112,18 +199,14 @@ def create_app(
         }
 
     @app.get("/health-check")
-    def healthcheck() -> Any:
+    async def healthcheck() -> Any:
         _check_setup_result()
         if app.state.health == Health.READY:
             health = Health.BUSY if runner.is_busy() else Health.READY
         else:
             health = app.state.health
-        return jsonable_encoder(
-            {
-                "status": health.name,
-                "setup": app.state.setup_result_payload,
-            }
-        )
+        setup = attrs.asdict(app.state.setup_result) if app.state.setup_result else {}
+        return jsonable_encoder({"status": health.name, "setup": setup})
 
     @app.get("/health/ready")
     def healthcheck_readiness() -> Any:
@@ -171,12 +254,18 @@ def create_app(
             }
         )
 
+    @limited
     @app.post(
         "/predictions",
         response_model=NewPredictionResponse,
         response_model_exclude_unset=True,
     )
-    def predict(request: NewPredictionRequest = Body(default=None)) -> Any:  # type: ignore
+    async def predict(
+        request: NewPredictionRequest = Body(default=None),
+        # prefer: Optional[str] = Header(default=None),
+        traceparent: Optional[str] = Header(default=None, include_in_schema=False),
+        tracestate: Optional[str] = Header(default=None, include_in_schema=False),
+    ) -> Any:  # type: ignore
         """
         Run a single prediction on the model
         """
@@ -189,10 +278,16 @@ def create_app(
         # respond_async = prefer == "respond-async"
         respond_async = False
 
-        return _predict(request=request, respond_async=respond_async)
+        with trace_context(make_trace_context(traceparent, tracestate)):
+            return _predict(
+                request=request,
+                respond_async=respond_async,
+            )
 
     def _predict(
-        *, request: NewPredictionRequest, respond_async: bool = False
+        *,
+        request: NewPredictionRequest,
+        respond_async: bool = False,
     ) -> Response:
         # [compat] If no body is supplied, assume that this model can be run
         # with empty input. This will throw a ValidationError if that's not
@@ -243,23 +338,23 @@ def create_app(
         return JSONResponse(content=encoded_response)
 
     def _check_setup_result() -> Any:
-        if app.state.setup_result is None:
+        if app.state.setup_task is None:
             return
 
-        if not app.state.setup_result.ready():
+        if not app.state.setup_task.ready():
             return
 
-        result = app.state.setup_result.get()
+        result = app.state.setup_task.get()
 
-        if result["status"] == schema.Status.SUCCEEDED:
+        if result.status == schema.Status.SUCCEEDED:
             app.state.health = Health.READY
         else:
             app.state.health = Health.SETUP_FAILED
 
-        app.state.setup_result_payload = result
+        app.state.setup_result = result
 
-        # Reset app.state.setup_result so future calls are a no-op
-        app.state.setup_result = None
+        # Reset app.state.setup_task so future calls are a no-op
+        app.state.setup_task = None
 
     return app
 
@@ -313,11 +408,18 @@ def signal_ignore(signum: Any, frame: Any) -> None:
     log.warn("Got a signal to exit, ignoring it...", signal=signal.Signals(signum).name)
 
 
-def signal_set_event(event: threading.Event) -> Callable:
+def signal_set_event(event: threading.Event) -> Callable[[Any, Any], None]:
     def _signal_set_event(signum: Any, frame: Any) -> None:
         event.set()
 
     return _signal_set_event
+
+
+def _cpu_count() -> int:
+    try:
+        return len(os.sched_getaffinity(0)) or 1  # type: ignore
+    except AttributeError:  # not available on every platform
+        return os.cpu_count() or 1
 
 
 if __name__ == "__main__":
@@ -362,12 +464,12 @@ if __name__ == "__main__":
 
     config = load_config()
 
-    threads = args.threads
+    threads: Optional[int] = args.threads
     if threads is None:
         if config.get("build", {}).get("gpu", False):
             threads = 1
         else:
-            threads = os.cpu_count()
+            threads = _cpu_count()
 
     shutdown_event = threading.Event()
     app = create_app(
@@ -406,3 +508,8 @@ if __name__ == "__main__":
         pass
 
     s.stop()
+
+    # return error exit code when setup failed and cog is running in interactive mode (not k8s)
+    if app.state.setup_result and not args.await_explicit_shutdown:
+        if app.state.setup_result.status == schema.Status.FAILED:
+            exit(-1)
