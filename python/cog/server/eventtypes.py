@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from attrs import define, field, validators
 
@@ -38,6 +38,8 @@ class Done:
     canceled: bool = False
     error: bool = False
     error_detail: str = ""
+    error_type: Optional[str] = None
+    error_status_code: Optional[int] = None
 
 
 @define
