@@ -285,10 +285,17 @@ class PredictionEventHandler:
         }
         self._send_webhook(schema.WebhookEvent.COMPLETED)
 
-    def failed(self, error: str) -> None:
+    def failed(
+        self,
+        error: str,
+        error_type: Optional[str] = None,
+        error_status_code: Optional[int] = None,
+    ) -> None:
         log.info("prediction failed", error=error)
         self.p.status = schema.Status.FAILED
         self.p.error = error
+        self.p.error_type = error_type
+        self.p.error_status_code = error_status_code
         self._set_completed_at()
         self._send_webhook(schema.WebhookEvent.COMPLETED)
 
@@ -448,7 +455,11 @@ def _predict(
             if event.canceled:
                 event_handler.canceled()
             elif event.error:
-                event_handler.failed(error=str(event.error_detail))
+                event_handler.failed(
+                    error=str(event.error_detail),
+                    error_type=event.error_type,
+                    error_status_code=event.error_status_code,
+                )
             else:
                 event_handler.succeeded()
 

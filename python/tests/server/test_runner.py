@@ -148,7 +148,10 @@ PREDICT_TESTS = [
     ([Heartbeat()], []),
     ([Done()], [mock.call.succeeded()]),
     ([Done(canceled=True)], [mock.call.canceled()]),
-    ([Done(error=True, error_detail="foo")], [mock.call.failed(error="foo")]),
+    (
+        [Done(error=True, error_detail="foo")],
+        [mock.call.failed(error="foo", error_type=None, error_status_code=None)],
+    ),
     ([Log(source="stdout", message="help")], [mock.call.append_logs("help")]),
     (
         [PredictionOutputType(multi=False), PredictionOutput(payload="hello world")],

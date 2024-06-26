@@ -311,10 +311,17 @@ def create_app(
                 raw_instance_response = async_result.get().dict()
 
                 # Return JSONResponse to prevent trigger error multiple times on sentry
-                if raw_instance_response.get('status') == 'failed':
-                    return JSONResponse({'detail': raw_instance_response.get('error')}, status_code=500)
+                if raw_instance_response.get("status") == "failed":
+                    # use error_status_code if it exists, otherwise default to 500
+                    status_code = raw_instance_response.get("error_status_code", 500)
+                    # use error_type if it exists, otherwise default to None
+                    error_type = raw_instance_response.get("error_type")
+                    body = {"detail": raw_instance_response.get("error")}
+                    if error_type:
+                        body["error_type"] = error_type
+                    return JSONResponse(body, status_code=status_code)
 
-                instance_response = async_result.get().dict()['output']
+                instance_response = async_result.get().dict()["output"]
                 all_results.append(instance_response)
             except RunnerBusyError:
                 return JSONResponse(

@@ -93,6 +93,9 @@ class PredictionResponse(PredictionBaseModel):
 
     metrics: t.Optional[t.Dict[str, t.Any]]
 
+    error_type: t.Optional[str]
+    error_status_code: t.Optional[int]
+
     @classmethod
     def with_types(cls, output_type: t.Type[t.Any]) -> t.Any:
         # [compat] Input is implicitly optional -- previous versions of the
