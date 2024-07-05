@@ -8,8 +8,9 @@ from enum import Enum, auto, unique
 from multiprocessing.connection import Connection
 from typing import Any, Dict, Iterable, Optional, TextIO, Union
 
-from cog.errors import PredictorBaseError, PredictorInputError
 from sentry_sdk import capture_exception
+
+from cog.errors import PredictorBaseError, PredictorInputError
 
 from ..json import make_encodeable
 from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup
@@ -193,15 +194,15 @@ class _ChildWorker(_spawn.Process):  # type: ignore
         except PredictorInputError as e:
             done.error = True
             done.error_detail = e.message
-            done.error_type = e.type
-            done.error_status_code = e._status_code
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
         except PredictorBaseError as e:
             capture_exception(e)  # Cpaturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = e.message
-            done.error_type = e.type
-            done.error_status_code = e._status_code
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
         except Exception as e:
             capture_exception(e)  # Cpaturing exception with sentry
             traceback.print_exc()
@@ -250,15 +251,15 @@ class _ChildWorker(_spawn.Process):  # type: ignore
         except PredictorInputError as e:
             done.error = True
             done.error_detail = e.message
-            done.error_type = e.type
-            done.error_status_code = e._status_code
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
         except PredictorBaseError as e:
             capture_exception(e)  # Cpaturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = e.message
-            done.error_type = e.type
-            done.error_status_code = e._status_code
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
         except Exception as e:
             capture_exception(e)  # Cpaturing exception with sentry
             traceback.print_exc()

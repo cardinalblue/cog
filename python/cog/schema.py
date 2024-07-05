@@ -94,7 +94,7 @@ class PredictionResponse(PredictionBaseModel):
     metrics: t.Optional[t.Dict[str, t.Any]]
 
     error_type: t.Optional[str]
-    error_status_code: t.Optional[int]
+    http_status_code: t.Optional[int]
 
     @classmethod
     def with_types(cls, output_type: t.Type[t.Any]) -> t.Any:
@@ -102,9 +102,7 @@ class PredictionResponse(PredictionBaseModel):
         # Cog HTTP API allowed input to be omitted (e.g. for models that don't
         # have any inputs). We should consider changing this in future.
         return pydantic.create_model(
-            cls.__name__,
-            __base__=cls,
-            output=(output_type, None)
+            cls.__name__, __base__=cls, output=(output_type, None)
         )
 
 
@@ -117,9 +115,7 @@ class NewPredictionResponse(PredictionBaseModel):
         # Cog HTTP API allowed input to be omitted (e.g. for models that don't
         # have any inputs). We should consider changing this in future.
         return pydantic.create_model(
-            cls.__name__,
-            __base__=cls,
-            predictions=(t.List[output_type], None)
+            cls.__name__, __base__=cls, predictions=(t.List[output_type], None)
         )
 
 

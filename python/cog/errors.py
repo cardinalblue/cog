@@ -17,15 +17,18 @@ class PredictorBaseError(Exception):
     """Base class for all predictor errors."""
 
     def __init__(
-        self, message: str, type_: Optional[str] = None, status_code: int = 500
+        self,
+        message: str,
+        error_type: Optional[str] = None,
+        http_status_code: int = 500,
     ) -> None:
         self.message = message
-        self.type = type_
-        self._status_code = status_code
+        self.error_type = error_type
+        self.http_status_code = http_status_code
 
     def __str__(self) -> str:
-        if self.type:
-            return f"{self.type}: {self.message}"
+        if self.error_type:
+            return f"{self.error_type}: {self.message}"
 
         return self.message
 
@@ -33,12 +36,12 @@ class PredictorBaseError(Exception):
 class PredictorInputError(PredictorBaseError):
     """Exception raised when the input to the predictor is invalid."""
 
-    def __init__(self, message: str, type_: Optional[str] = None) -> None:
-        super().__init__(message, type_, status_code=400)
+    def __init__(self, message: str, error_type: Optional[str] = None) -> None:
+        super().__init__(message, error_type=error_type, http_status_code=400)
 
 
 class PredictorInternalError(PredictorBaseError):
     """Exception raised when the predictor encounters an internal error."""
 
-    def __init__(self, message: str, type_: Optional[str] = None) -> None:
-        super().__init__(message, type_, status_code=500)
+    def __init__(self, message: str, error_type: Optional[str] = None) -> None:
+        super().__init__(message, error_type=error_type, http_status_code=500)

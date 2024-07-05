@@ -16,7 +16,7 @@ class Predictor(BasePredictor):
         """Run a single prediction on the model"""
 
 
-        kwargs = {"type_": "error type"} if with_type else {}
+        kwargs = {"error_type": "error type"} if with_type else {}
         if use_subclass:
             raise SubClass("subclass error", **kwargs)
         else:

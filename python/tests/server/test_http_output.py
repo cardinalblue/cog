@@ -1,11 +1,6 @@
-import base64
-import io
 import pytest
 
-import responses
-from responses.matchers import multipart_matcher
-
-from .conftest import uses_predictor, uses_predictor_with_client_options
+from .conftest import uses_predictor
 
 # Not allow empty request body
 # @uses_predictor("output_wrong_type")
@@ -169,14 +164,23 @@ def test_cb_output_predictor_input_error(client, use_subclass, with_type, match)
     if with_type:
         assert resp.json() == match(
             {
-                "detail": msg,
-                "error_type": "error type",
+                "detail": [
+                    {
+                        "msg": msg,
+                        "error_type": "error type",
+                    }
+                ]
             }
         )
     else:
         assert resp.json() == match(
             {
-                "detail": msg,
+                "detail": [
+                    {
+                        "msg": msg,
+                        "error_type": None,
+                    }
+                ]
             }
         )
 
@@ -194,13 +198,22 @@ def test_cb_output_predictor_internal_error(client, use_subclass, with_type, mat
     if with_type:
         assert resp.json() == match(
             {
-                "detail": msg,
-                "error_type": "error type",
+                "detail": [
+                    {
+                        "msg": msg,
+                        "error_type": "error type",
+                    }
+                ]
             }
         )
     else:
         assert resp.json() == match(
             {
-                "detail": msg,
+                "detail": [
+                    {
+                        "msg": msg,
+                        "error_type": None,
+                    }
+                ]
             }
         )

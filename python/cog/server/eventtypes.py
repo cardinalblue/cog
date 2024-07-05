@@ -39,7 +39,7 @@ class Done:
     error: bool = False
     error_detail: str = ""
     error_type: Optional[str] = None
-    error_status_code: Optional[int] = None
+    http_status_code: Optional[int] = None
 
 
 @define
