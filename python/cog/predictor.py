@@ -57,11 +57,12 @@ ALLOWED_INPUT_TYPES: List[Type[Any]] = [
     bool,
     # CogFile,
     # CogPath,
-    CogSecret,
+    # CogSecret,
 ]
 NOT_ALLOWED_INPUT_TYPES: List[Type[Any]] = [
     CogFile,
     CogPath,
+    CogSecret,
 ]
 
 

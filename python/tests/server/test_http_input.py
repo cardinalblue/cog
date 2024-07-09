@@ -253,14 +253,14 @@ def test_union_integers(client):
     assert resp.status_code == 422
 
 
-@uses_predictor("input_secret")
-def test_secret_str(client, match):
-    resp = client.post("/predictions", json={"instances": [{"secret": "foo"}]})
-    assert resp.status_code == 200
-    assert resp.json() == match({"predictions": ["foo"]})
+# @uses_predictor("input_secret")
+# def test_secret_str(client, match):
+#     resp = client.post("/predictions", json={"instances": [{"secret": "foo"}]})
+#     assert resp.status_code == 200
+#     assert resp.json() == match({"predictions": ["foo"]})
 
-    resp = client.post("/predictions", json={"instances": [{"secret": {}}]})
-    assert resp.status_code == 422
+#     resp = client.post("/predictions", json={"instances": [{"secret": {}}]})
+#     assert resp.status_code == 422
 
 
 def test_untyped_inputs():
