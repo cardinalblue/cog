@@ -59,6 +59,10 @@ ALLOWED_INPUT_TYPES: List[Type[Any]] = [
     # CogPath,
     CogSecret,
 ]
+NOT_ALLOWED_INPUT_TYPES: List[Type[Any]] = [
+    CogFile,
+    CogPath,
+]
 
 
 class BasePredictor(ABC):
@@ -275,7 +279,13 @@ class BaseInput(BaseModel):
                     pass
 
 
+# CB: we allow nested input types and pydantic types
 def validate_input_type(type: Type[Any], name: str) -> None:
+    if type in NOT_ALLOWED_INPUT_TYPES:
+        raise TypeError(
+            f"Unsupported input type {human_readable_type_name(type)} for parameter `{name}`. Unsupported types are: {readable_types_list(NOT_ALLOWED_INPUT_TYPES)}."
+        )
+
     if type in ALLOWED_INPUT_TYPES:
         return
 
@@ -292,10 +302,6 @@ def validate_input_type(type: Type[Any], name: str) -> None:
         ):  # noqa: E721
             for t in get_args(type):
                 validate_input_type(t, name)
-        else:
-            raise TypeError(
-                f"Unsupported input type {human_readable_type_name(type)} for parameter `{name}`. Supported input types are: {readable_types_list(ALLOWED_INPUT_TYPES)}, or a Union or List of those types."
-            )
 
 
 def get_input_create_model_kwargs(signature: inspect.Signature) -> Dict[str, Any]:
