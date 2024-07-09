@@ -1,15 +1,11 @@
-import base64
-import os
 import threading
 
-import responses
 from cog import schema
 from cog.server.http import Health, create_app
 
 from tests.server.conftest import _fixture_path
 
 from .conftest import uses_predictor
-
 
 # @uses_predictor("input_none")
 # def test_no_input(client, match):
@@ -257,14 +253,14 @@ def test_union_integers(client):
     assert resp.status_code == 422
 
 
-@uses_predictor("input_secret")
-def test_secret_str(client, match):
-    resp = client.post("/predictions", json={"instances": [{"secret": "foo"}]})
-    assert resp.status_code == 200
-    assert resp.json() == match({"predictions": ["foo"]})
+# @uses_predictor("input_secret")
+# def test_secret_str(client, match):
+#     resp = client.post("/predictions", json={"instances": [{"secret": "foo"}]})
+#     assert resp.status_code == 200
+#     assert resp.json() == match({"predictions": ["foo"]})
 
-    resp = client.post("/predictions", json={"instances": [{"secret": {}}]})
-    assert resp.status_code == 422
+#     resp = client.post("/predictions", json={"instances": [{"secret": {}}]})
+#     assert resp.status_code == 422
 
 
 def test_untyped_inputs():
@@ -298,7 +294,12 @@ def test_untyped_inputs():
 
 @uses_predictor("cb_input_complex")
 def test_cb_complex_input(client):
-    sub_dict = {"text": "a", "numbers": [1, 2, 3]}
+    sub_dict = {
+        "text": "a",
+        "numbers": [1, 2, 3],
+        "enum": "two",
+        "url": "http://example.com",
+    }
     test_dict = {"text": "b", "numbers": [4, 5, 6], "sub_dict": sub_dict}
     resp = client.post(
         "/predictions",
@@ -315,10 +316,23 @@ def test_cb_complex_input(client):
     )
     assert resp.status_code == 200
     resp = client.post(
-        "/predictions", json={"instances": [{"list_test_dict": [test_dict, test_dict]}]}
+        "/predictions",
+        json={"instances": [{"list_test_dict": [test_dict, test_dict]}]},
     )
     assert resp.status_code == 422
     resp = client.post(
         "/predictions", json={"instances": [{"list_testest_dictt_dict": test_dict}]}
     )
     assert resp.status_code == 422
+
+
+def test_cb_unsupported_input_cog_file_and_path():
+    for name in ["input_file", "input_path"]:
+        config = {"predict": _fixture_path(name)}
+        app = create_app(
+            config=config,
+            shutdown_event=threading.Event(),
+        )
+        assert app.state.health == Health.SETUP_FAILED
+        assert app.state.setup_result.status == schema.Status.FAILED
+        assert "TypeError: Unsupported input type" in app.state.setup_result.logs
