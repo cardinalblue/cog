@@ -22,7 +22,7 @@ from hypothesis.stateful import (
 )
 
 # Set a longer deadline on CI as the instances are a bit slower.
-settings.register_profile("ci", max_examples=100, deadline=2000)
+settings.register_profile("ci", max_examples=100, deadline=4000)
 settings.register_profile("default", max_examples=10, deadline=1500)
 settings.register_profile("slow", max_examples=10, deadline=2000)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
@@ -197,6 +197,29 @@ def test_no_exceptions_from_recoverable_failures(data, name, payloads):
         for _ in range(5):
             payload = data.draw(st.fixed_dictionaries(payloads))
             _process(w.predict(payload))
+    finally:
+        w.terminate()
+
+
+@given(data=st.data())
+def test_stream_redirector_race_condition(data):
+    """
+    StreamRedirector and _ChildWorker are using the same _events pipe to send data.
+    When there are multiple threads trying to write to the same pipe, it can cause data corruption by race condition.
+    The data corruption will cause pipe receiver to raise an exception due to unpickling error.
+    """
+    w = Worker(
+        predictor_ref=_fixture_path("stream_redirector_race_condition"),
+        tee_output=False,
+    )
+
+    try:
+        result = _process(w.setup())
+        assert not result.done.error
+
+        payload = data.draw(st.fixed_dictionaries({}))
+        _process(w.predict(payload))
+
     finally:
         w.terminate()
 
