@@ -1,6 +1,10 @@
-import pytest
+import base64
+import io
 
-from .conftest import uses_predictor
+import responses
+from responses.matchers import multipart_matcher
+
+from .conftest import uses_predictor, uses_predictor_with_client_options
 
 # Not allow empty request body
 # @uses_predictor("output_wrong_type")
@@ -149,71 +153,3 @@ def test_cb_complex_output(client, match):
         {"predictions": [{"test_dict": {"text": "a", "numbers": [1, 2]}}]}
     )
     assert resp.status_code == 200
-
-
-@pytest.mark.parametrize("with_type", [False, True])
-@pytest.mark.parametrize("use_subclass", [False, True])
-@uses_predictor("cb_output_predictor_input_error")
-def test_cb_output_predictor_input_error(client, use_subclass, with_type, match):
-    instance = {"use_subclass": use_subclass, "with_type": with_type}
-    resp = client.post("/predictions", json={"instances": [instance]})
-    assert resp.status_code == 400
-
-    msg = "subclass error" if use_subclass else "predictor input error"
-
-    if with_type:
-        assert resp.json() == match(
-            {
-                "detail": [
-                    {
-                        "msg": msg,
-                        "error_type": "error type",
-                    }
-                ]
-            }
-        )
-    else:
-        assert resp.json() == match(
-            {
-                "detail": [
-                    {
-                        "msg": msg,
-                        "error_type": None,
-                    }
-                ]
-            }
-        )
-
-
-@pytest.mark.parametrize("with_type", [False, True])
-@pytest.mark.parametrize("use_subclass", [False, True])
-@uses_predictor("cb_output_predictor_internal_error")
-def test_cb_output_predictor_internal_error(client, use_subclass, with_type, match):
-    instance = {"use_subclass": use_subclass, "with_type": with_type}
-    resp = client.post("/predictions", json={"instances": [instance]})
-    assert resp.status_code == 500
-
-    msg = "subclass error" if use_subclass else "predictor internal error"
-
-    if with_type:
-        assert resp.json() == match(
-            {
-                "detail": [
-                    {
-                        "msg": msg,
-                        "error_type": "error type",
-                    }
-                ]
-            }
-        )
-    else:
-        assert resp.json() == match(
-            {
-                "detail": [
-                    {
-                        "msg": msg,
-                        "error_type": None,
-                    }
-                ]
-            }
-        )

@@ -157,9 +157,7 @@ def create_app(
         pass
 
     NewPredictionRequest = schema.NewPredictionRequest.with_types(input_type=InputType)
-    NewPredictionResponse = schema.NewPredictionResponse.with_types(
-        output_type=OutputType
-    )
+    NewPredictionResponse = schema.NewPredictionResponse.with_types(output_type=OutputType)
 
     http_semaphore = asyncio.Semaphore(threads)
 
@@ -216,11 +214,17 @@ def create_app(
         health = app.state.health
 
         if health == Health.UNKNOWN:
-            return JSONResponse({"detail": "Unknown server status"}, status_code=500)
+            return JSONResponse(
+                {"detail": "Unknown server status"}, status_code=500
+            )
         if health == Health.SETUP_FAILED:
-            return JSONResponse({"detail": "Error starting server"}, status_code=500)
+            return JSONResponse(
+                {"detail": "Error starting server"}, status_code=500
+            )
         if health == Health.STARTING:
-            return JSONResponse({"detail": "Server is starting"}, status_code=503)
+            return JSONResponse(
+                {"detail": "Server is starting"}, status_code=503
+            )
         return jsonable_encoder(
             {
                 "status": health.name,
@@ -237,10 +241,18 @@ def create_app(
             health = app.state.health
 
         if health == Health.UNKNOWN:
-            return JSONResponse({"detail": "Unknown server status"}, status_code=500)
+            return JSONResponse(
+                {"detail": "Unknown server status"}, status_code=500
+            )
         if health == Health.SETUP_FAILED:
-            return JSONResponse({"detail": "Error starting server"}, status_code=500)
-        return jsonable_encoder({"status": health.name})
+            return JSONResponse(
+                {"detail": "Error starting server"}, status_code=500
+            )
+        return jsonable_encoder(
+            {
+                "status": health.name
+            }
+        )
 
     @limited
     @app.post(
@@ -299,17 +311,10 @@ def create_app(
                 raw_instance_response = async_result.get().dict()
 
                 # Return JSONResponse to prevent trigger error multiple times on sentry
-                if raw_instance_response.get("status") == "failed":
-                    # use error_status_code if it exists, otherwise default to 500
-                    status_code = raw_instance_response.get("http_status_code", 500)
-                    detail_item = {
-                        "msg": raw_instance_response.get("error"),
-                        "error_type": raw_instance_response.get("error_type", None),
-                    }
-                    body = {"detail": [detail_item]}
-                    return JSONResponse(body, status_code=status_code)
+                if raw_instance_response.get('status') == 'failed':
+                    return JSONResponse({'detail': raw_instance_response.get('error')}, status_code=500)
 
-                instance_response = async_result.get().dict()["output"]
+                instance_response = async_result.get().dict()['output']
                 all_results.append(instance_response)
             except RunnerBusyError:
                 return JSONResponse(
