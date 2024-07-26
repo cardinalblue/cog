@@ -217,3 +217,20 @@ def test_cb_output_predictor_internal_error(client, use_subclass, with_type, mat
                 ]
             }
         )
+
+
+@uses_predictor("cb_output_error")
+def test_cb_output_error(client, match):
+    instance = {"error_message": "test"}
+    resp = client.post("/predictions", json={"instances": [instance]})
+    assert resp.status_code == 500
+    assert resp.json() == match(
+        {
+            "detail": [
+                {
+                    "msg": "test",
+                    "error_type": None,
+                }
+            ]
+        }
+    )
