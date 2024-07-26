@@ -10,6 +10,8 @@ from typing import Any, Dict, Iterable, Optional, TextIO, Union
 
 from sentry_sdk import capture_exception
 
+from cog.errors import PredictorBaseError, PredictorInputError
+
 from ..json import make_encodeable
 from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup
 from .eventtypes import (
@@ -190,13 +192,25 @@ class _ChildWorker(_spawn.Process):  # type: ignore
             # Could be a function or a class
             if hasattr(self._predictor, "setup"):
                 run_setup(self._predictor)
+        except PredictorInputError as e:
+            done.error = True
+            done.error_detail = e.message
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
+        except PredictorBaseError as e:
+            capture_exception(e)  # Cpaturing exception with sentry
+            traceback.print_exc()
+            done.error = True
+            done.error_detail = e.message
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
         except Exception as e:
-            capture_exception(e) # Cpaturing exception with sentry
+            capture_exception(e)  # Cpaturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = str(e)
         except BaseException as e:
-            capture_exception(e) # Cpaturing exception with sentry
+            capture_exception(e)  # Cpaturing exception with sentry
             # For SystemExit and friends we attempt to add some useful context
             # to the logs, but reraise to ensure the process dies.
             traceback.print_exc()
@@ -241,8 +255,20 @@ class _ChildWorker(_spawn.Process):  # type: ignore
                         )
         except CancelationException:
             done.canceled = True
+        except PredictorInputError as e:
+            done.error = True
+            done.error_detail = e.message
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
+        except PredictorBaseError as e:
+            capture_exception(e)  # Cpaturing exception with sentry
+            traceback.print_exc()
+            done.error = True
+            done.error_detail = e.message
+            done.error_type = e.error_type
+            done.http_status_code = e.http_status_code
         except Exception as e:
-            capture_exception(e) # Cpaturing exception with sentry
+            capture_exception(e)  # Cpaturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = str(e)

@@ -404,9 +404,7 @@ def test_yielding_strings_from_generator_predictors(client, match):
 def test_yielding_strings_from_concatenate_iterator(client, match):
     resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.status_code == 200
-    assert resp.json() == match(
-        {"predictions": [["foo", "bar", "baz"]]}
-    )
+    assert resp.json() == match({"predictions": [["foo", "bar", "baz"]]})
 
 
 # @uses_predictor("yield_strings_file_input")
