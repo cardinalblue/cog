@@ -301,7 +301,7 @@ def create_app(
                 # Return JSONResponse to prevent trigger error multiple times on sentry
                 if raw_instance_response.get("status") == "failed":
                     # use error_status_code if it exists, otherwise default to 500
-                    status_code = raw_instance_response.get("http_status_code", 500)
+                    status_code = raw_instance_response.get("http_status_code") or 500
                     detail_item = {
                         "msg": raw_instance_response.get("error"),
                         "error_type": raw_instance_response.get("error_type", None),
