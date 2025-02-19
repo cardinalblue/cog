@@ -261,9 +261,9 @@ class PredictionEventHandler:
         # one here.
 
     def append_output(self, output: Any) -> None:
-        assert isinstance(
-            self.p.output, list
-        ), "Cannot append output before setting output"
+        assert isinstance(self.p.output, list), (
+            "Cannot append output before setting output"
+        )
         self.p.output.append(self._upload_files(output))
         self._send_webhook(schema.WebhookEvent.OUTPUT)
 

@@ -80,8 +80,8 @@ PREDICT_LOGS_FIXTURES = [
     (
         "logging",
         {},
-        ("writing from C\n" "writing with print\n"),
-        ("WARNING:root:writing log message\n" "writing to stderr\n"),
+        ("writing from C\nwriting with print\n"),
+        ("WARNING:root:writing log message\nwriting to stderr\n"),
     )
 ]
 
@@ -121,14 +121,14 @@ def _process(events, swallow_exceptions=False):
                 if result.output_type.multi:
                     result.output.append(event.payload)
                 else:
-                    assert (
-                        result.output is None
-                    ), "Should not get multiple outputs for output type single"
+                    assert result.output is None, (
+                        "Should not get multiple outputs for output type single"
+                    )
                     result.output = event.payload
             elif isinstance(event, PredictionOutputType):
-                assert (
-                    result.output_type is None
-                ), "Should not get multiple output type events"
+                assert result.output_type is None, (
+                    "Should not get multiple output type events"
+                )
                 result.output_type = event
                 if result.output_type.multi:
                     result.output = []
@@ -546,7 +546,7 @@ class WorkerState(RuleBasedStateMachine):
 
         expected_stdout = ["START\n"]
         for i in range(payload["steps"]):
-            expected_stdout.append(f"STEP {i+1}\n")
+            expected_stdout.append(f"STEP {i + 1}\n")
         expected_stdout.append("END\n")
 
         assert result.stdout == "".join(expected_stdout)
