@@ -1,0 +1,52 @@
+version: 2.1
+
+orbs:
+  python: circleci/python@3.0.0
+
+parameters:
+  python-versions:
+    type: string
+    default: '["3.8", "3.9", "3.10", "3.11", "3.12"]'
+
+executors:
+  ubuntu-xlarge:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: xlarge
+
+jobs:
+  test-python:
+    parameters:
+      python-version:
+        type: string
+      pydantic:
+        type: string
+    docker:
+      - image: cimg/python:<< parameters.python-version >>
+    steps:
+      - checkout
+      - run:
+        name: Install Python dependencies
+        command: |
+          python -m pip install '.[dev,tests]'
+      - run:
+          name: Build wheel
+          command: |
+            mkdir -p pkg/dockerfile/embed
+            rm -f pkg/dockerfile/embed/*.whl
+            python -m pip wheel --no-deps --no-binary=:all: --wheel-dir=pkg/dockerfile/embed .
+      - run:
+          name: Run tests
+          command: |
+            export TOX_PYTHON=py$(echo "<< parameters.python-version >>" | tr -d .)
+            python -Im tox run --installpkg "pkg/dockerfile/embed/*.whl" -e ${TOX_PYTHON}-pydantic<< parameters.pydantic >>-tests
+
+workflows:
+  version: 2
+  build-test:
+    jobs:
+      - test-python:
+          matrix:
+            parameters:
+              python-version: << pipeline.parameters.python-versions >>
+              pydantic: ["1", "2"]
