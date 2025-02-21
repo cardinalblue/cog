@@ -11,6 +11,7 @@ executors:
 
 jobs:
   test-python:
+    name: test-python-py<< parameters.python-version >>-pydantic<< parameters.pydantic >>
     parameters:
       python-version:
         type: string
@@ -25,14 +26,11 @@ jobs:
           command: |
             python -m pip install '.[dev,tests]'
       - run:
-          name: Build wheel
+          name: Build wheel and run tests
           command: |
             mkdir -p pkg/dockerfile/embed
             rm -f pkg/dockerfile/embed/*.whl
             python -m pip wheel --no-deps --no-binary=:all: --wheel-dir=pkg/dockerfile/embed .
-      - run:
-          name: Run tests
-          command: |
             export TOX_PYTHON=py$(echo "<< parameters.python-version >>" | tr -d .)
             python -Im tox run --installpkg "pkg/dockerfile/embed/*.whl" -e ${TOX_PYTHON}-pydantic<< parameters.pydantic >>-tests
 
