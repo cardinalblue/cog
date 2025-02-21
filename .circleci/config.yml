@@ -11,7 +11,6 @@ executors:
 
 jobs:
   test-python:
-    name: test-python-py<< parameters.python-version >>-pydantic<< parameters.pydantic >>
     parameters:
       python-version:
         type: string
@@ -39,6 +38,7 @@ workflows:
   build-test:
     jobs:
       - test-python:
+          name: "Test Python << parameters.python-version >> + Pydantic v<< parameters.pydantic >>"
           matrix:
             parameters:
               python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
