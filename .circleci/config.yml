@@ -3,11 +3,6 @@ version: 2.1
 orbs:
   python: circleci/python@3.0.0
 
-parameters:
-  python-versions:
-    type: string
-    default: '["3.8", "3.9", "3.10", "3.11", "3.12"]'
-
 executors:
   ubuntu-xlarge:
     machine:
@@ -26,9 +21,9 @@ jobs:
     steps:
       - checkout
       - run:
-        name: Install Python dependencies
-        command: |
-          python -m pip install '.[dev,tests]'
+          name: Install Python dependencies
+          command: |
+            python -m pip install '.[dev,tests]'
       - run:
           name: Build wheel
           command: |
@@ -48,5 +43,5 @@ workflows:
       - test-python:
           matrix:
             parameters:
-              python-version: << pipeline.parameters.python-versions >>
+              python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
               pydantic: ["1", "2"]
