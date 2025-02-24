@@ -162,8 +162,8 @@ def test_prediction_runner_predict_failure():
     w.run_predict([Done(error=True, error_detail="ErrNeckTooLong")])
     assert task.result.status == Status.FAILED
     assert task.result.error == "ErrNeckTooLong"
-    assert task.result.error_type == None
-    assert task.result.http_status_code == None
+    assert task.result.error_type is None
+    assert task.result.http_status_code is None
 
 
 def test_prediction_runner_predict_exception():

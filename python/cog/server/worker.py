@@ -11,11 +11,10 @@ from enum import Enum, auto, unique
 from multiprocessing.connection import Connection
 from typing import Any, Callable, Dict, Optional, Union
 
+import structlog
 from sentry_sdk import capture_exception
 
 from cog.errors import PredictorBaseError, PredictorInputError
-
-import structlog
 
 from ..json import make_encodeable
 from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup

@@ -52,7 +52,7 @@ def test_good_int_input(client, match):
 def test_bad_int_input(client):
     resp = client.post("/predictions", json={"instances": [{"num": "foo"}]})
     detail = resp.json()["detail"][0]
-    assert detail["loc"] == ["body", "input", "num"]
+    assert detail["loc"] == ["body", "instances", 0, "num"]
     assert "valid integer" in detail["msg"]
     assert resp.status_code == 422
 
@@ -207,7 +207,7 @@ def test_default_int_input(client, match):
 def test_gt_lt(client):
     resp = client.post("/predictions", json={"instances": [{"num": 2}]})
     detail = resp.json()["detail"][0]
-    assert detail["loc"] == ["body", "input", "num"]
+    assert detail["loc"] == ["body", "instances", 0, "num"]
     assert "greater than or equal to 3.01" in detail["msg"]
 
     resp = client.post("/predictions", json={"instances": [{"num": 5}]})
@@ -377,4 +377,4 @@ def test_cb_unsupported_input_cog_file_and_path():
         )
         assert app.state.health == Health.SETUP_FAILED
         assert app.state.setup_result.status == schema.Status.FAILED
-        assert "TypeError: Unsupported input type" in app.state.setup_result.logs
+        assert "TypeError: Unsupported input type" in app.state.setup_result.logs[0]

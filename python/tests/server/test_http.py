@@ -198,6 +198,7 @@ def test_openapi_specification(client, static_schema):
         "type": "integer",
     }
     assert schema["components"]["schemas"]["NewPredictionRequest"] == {
+        "additionalProperties": True,
         "title": "NewPredictionRequest",
         "required": ["instances"],
         "type": "object",
@@ -210,6 +211,7 @@ def test_openapi_specification(client, static_schema):
         },
     }
     assert schema["components"]["schemas"]["NewPredictionResponse"] == {
+        "additionalProperties": True,
         "title": "NewPredictionResponse",
         "type": "object",
         "properties": {

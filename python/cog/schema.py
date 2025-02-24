@@ -105,10 +105,10 @@ class PredictionResponse(PredictionBaseModel):
     error: Optional[str] = None
     status: Optional[Status] = None
 
-    metrics: Optional[Dict[str, Any]]
+    metrics: Optional[Dict[str, Any]] = None
 
-    error_type: Optional[str]
-    http_status_code: Optional[int]
+    error_type: Optional[str] = None
+    http_status_code: Optional[int] = None
 
     # This is used to track a fatal exception that occurs during a prediction.
     # "Fatal" means that we require the worker to be shut down to recover:

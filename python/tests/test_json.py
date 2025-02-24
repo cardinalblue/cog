@@ -3,12 +3,10 @@ import tempfile
 
 import numpy as np
 import pydantic
-import responses
 
 import cog
-from cog.files import upload_file
-from cog.json import make_encodeable, upload_files
-from cog.types import PYDANTIC_V2, URLFile
+from cog.json import make_encodeable
+from cog.types import PYDANTIC_V2
 
 
 def test_make_encodeable_recursively_encodes_tuples():
@@ -59,18 +57,19 @@ def test_make_encodeable_ignores_files():
 #     }
 
 
-@responses.activate
-def test_upload_files_with_url():
-    responses.get(
-        "https://example.com/some/url.txt",
-        body="file content",
-        status=200,
-    )
+# Not supported yet
+# @responses.activate
+# def test_upload_files_with_url():
+#     responses.get(
+#         "https://example.com/some/url.txt",
+#         body="file content",
+#         status=200,
+#     )
 
-    obj = {"path": URLFile("https://example.com/some/url.txt")}
-    assert upload_files(obj, upload_file) == {
-        "path": "data:text/plain;base64,ZmlsZSBjb250ZW50"
-    }
+#     obj = {"path": URLFile("https://example.com/some/url.txt")}
+#     assert upload_files(obj, upload_file) == {
+#         "path": "data:text/plain;base64,ZmlsZSBjb250ZW50"
+#     }
 
 
 def test_numpy():

@@ -313,8 +313,10 @@ def _flatten_selected_allof_refs(
     openapi_schema: Dict[str, Any],
 ) -> None:
     try:
-        response = openapi_schema["components"]["schemas"]["PredictionResponse"]
-        response["properties"]["output"] = {"$ref": "#/components/schemas/Output"}
+        response = openapi_schema["components"]["schemas"]["NewPredictionResponse"]
+        response["properties"]["instances"]["items"] = {
+            "$ref": "#/components/schemas/Output"
+        }
     except KeyError:
         pass
 
@@ -322,7 +324,7 @@ def _flatten_selected_allof_refs(
         path = openapi_schema["paths"]["/predictions"]["post"]
         body = path["requestBody"]
         body["content"]["application/json"]["schema"] = {
-            "$ref": "#/components/schemas/PredictionRequest"
+            "$ref": "#/components/schemas/NewPredictionRequest"
         }
     except KeyError:
         pass

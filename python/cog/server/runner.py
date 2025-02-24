@@ -313,12 +313,12 @@ class PredictTask(Task[schema.PredictionResponse]):
         self._fut.result(timeout=timeout)
 
     def set_output_type(self, *, multi: bool) -> None:
-        assert (
-            self._output_type_multi is None
-        ), "Predictor unexpectedly returned multiple output types"
-        assert (
-            self._p.output is None
-        ), "Predictor unexpectedly returned output type after output"
+        assert self._output_type_multi is None, (
+            "Predictor unexpectedly returned multiple output types"
+        )
+        assert self._p.output is None, (
+            "Predictor unexpectedly returned output type after output"
+        )
 
         if multi:
             self._p.output = []
@@ -326,9 +326,9 @@ class PredictTask(Task[schema.PredictionResponse]):
         self._output_type_multi = multi
 
     def append_output(self, output: Any) -> None:
-        assert (
-            self._output_type_multi is not None
-        ), "Predictor unexpectedly returned output before output type"
+        assert self._output_type_multi is not None, (
+            "Predictor unexpectedly returned output before output type"
+        )
 
         uploaded_output = self._upload_files(output)
         if self._output_type_multi:
@@ -368,7 +368,8 @@ class PredictTask(Task[schema.PredictionResponse]):
         self._p.status = schema.Status.FAILED
         self._p.error = error
         self._p.error_type = error_type
-        self._p.http_status_code = http_status_code
+        if http_status_code is not None:
+            self._p.http_status_code = http_status_code
         self._set_completed_at()
         self._send_webhook(schema.WebhookEvent.COMPLETED)
 
@@ -390,7 +391,11 @@ class PredictTask(Task[schema.PredictionResponse]):
                 if event.canceled:
                     self.canceled()
                 elif event.error:
-                    self.failed(error=str(event.error_detail))
+                    self.failed(
+                        error=str(event.error_detail),
+                        error_type=event.error_type,
+                        http_status_code=event.http_status_code,
+                    )
                 else:
                     self.succeeded()
             else:  # shouldn't happen, exhausted the type

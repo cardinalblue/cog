@@ -11,7 +11,7 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from enum import Enum, auto, unique
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Type
 
 import sentry_sdk
 import structlog
@@ -36,6 +36,7 @@ from ..types import PYDANTIC_V2, CogConfig
 
 if PYDANTIC_V2:
     from .helpers import (
+        unwrap_pydantic_serialization_iterators,
         update_openapi_schema_for_pydantic_2,
     )
 
@@ -186,6 +187,13 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
     class PredictionRequest(schema.PredictionRequest.with_types(input_type=InputType)):
         pass
 
+    class PredictionResponse(
+        schema.PredictionResponse.with_types(
+            input_type=InputType, output_type=OutputType
+        )
+    ):
+        pass
+
     NewPredictionRequest = schema.NewPredictionRequest.with_types(input_type=InputType)
     NewPredictionResponse = schema.NewPredictionResponse.with_types(
         output_type=OutputType
@@ -288,6 +296,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         with trace_context(make_trace_context(traceparent, tracestate)):
             return _predict(
                 request=request,
+                response_type=NewPredictionResponse,
                 respond_async=respond_async,
             )
 
@@ -317,14 +326,16 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
                 task_kwargs["upload_url"] = upload_url
 
             try:
-                predict_task = runner.predict(request, task_kwargs=task_kwargs)
+                predict_task = runner.predict(instance_request, task_kwargs=task_kwargs)
             except RunnerBusyError:
                 return JSONResponse(
                     {"detail": "Already running a prediction"}, status_code=409
                 )
 
-            if hasattr(request.input, "cleanup"):
-                predict_task.add_done_callback(lambda _: request.input.cleanup())
+            if hasattr(instance_request.input, "cleanup"):
+                predict_task.add_done_callback(
+                    lambda _: instance_request.input.cleanup()
+                )
 
             predict_task.add_done_callback(_handle_predict_done)
 
@@ -344,8 +355,23 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             else:
                 response_object = predict_task.result.dict()
 
-            instance_response = response_type["output"]
-            all_results.append(instance_response)
+            if response_object.get("status") == "failed":
+                # use error_status_code if it exists, otherwise default to 500
+                status_code = response_object.get("http_status_code") or 500
+                detail_item = {
+                    "msg": response_object.get("error"),
+                    "error_type": response_object.get("error_type", None),
+                }
+                body = {"detail": [detail_item]}
+                return JSONResponse(body, status_code=status_code)
+            try:
+                _ = PredictionResponse(**response_object)
+            except ValidationError as e:
+                _log_invalid_output(e)
+                raise HTTPException(status_code=500, detail=str(e)) from e
+
+            all_results.append(response_object["output"])
+
         try:
             response = NewPredictionResponse(predictions=all_results)
         except ValidationError as e:
