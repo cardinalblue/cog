@@ -30,9 +30,9 @@ build:
   system_packages:
     - "libgl1-mesa-glx"
     - "libglib2.0-0"
-  python_version: "3.11"
+  python_version: "3.12"
   python_packages:
-    - "torch==1.8.1"
+    - "torch==2.3"
 predict: "predict.py:Predictor"
 ```
 
@@ -121,8 +121,23 @@ If you're using macOS, you can install Cog using Homebrew:
 brew install cog
 ```
 
-You can also download and install the latest release of Cog
-directly from GitHub by running the following commands in a terminal:
+You can also download and install the latest release using our 
+[install script](https://cog.run/install):
+
+```sh
+# fish shell
+sh (curl -fsSL https://cog.run/install.sh | psub)
+
+# bash, zsh, and other shells
+sh <(curl -fsSL https://cog.run/install.sh)
+
+# download with wget and run in a separate command
+wget -qO- https://cog.run/install.sh
+sh ./install.sh
+```
+
+You can manually install the latest release of Cog directly from GitHub 
+by running the following commands in a terminal:
 
 ```console
 sudo curl -o /usr/local/bin/cog -L "https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)"
@@ -136,20 +151,21 @@ make
 sudo make install
 ```
 
-## Upgrade
+Or if you are on docker:
 
-If you previously installed Cog from a GitHub Releases URL, you can upgrade to the latest version by running the same commands you used to install it:
-
-```console
-sudo curl -o /usr/local/bin/cog -L "https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)"
-sudo chmod +x /usr/local/bin/cog
 ```
+RUN sh -c "INSTALL_DIR=\"/usr/local/bin\" SUDO=\"\" $(curl -fsSL https://cog.run/install.sh)"
+```
+
+## Upgrade
 
 If you're using macOS and you previously installed Cog with Homebrew, run the following:
 
 ```console
 brew upgrade cog
 ```
+
+Otherwise, you can upgrade to the latest version by running the same commands you used to install it.
 
 ## Next steps
 
@@ -224,6 +240,11 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
     </tr>
     <tr>
       <td align="center" valign="top" width="14.28%"><a href="http://aroncarroll.com"><img src="https://avatars.githubusercontent.com/u/47144?v=4?s=100" width="100px;" alt="Aron Carroll"/><br /><sub><b>Aron Carroll</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=aron" title="Documentation">📖</a> <a href="https://github.com/replicate/cog/commits?author=aron" title="Code">💻</a> <a href="#ideas-aron" title="Ideas, Planning, & Feedback">🤔</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Theodotus1243"><img src="https://avatars.githubusercontent.com/u/32220358?v=4?s=100" width="100px;" alt="Bohdan Mykhailenko"/><br /><sub><b>Bohdan Mykhailenko</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=Theodotus1243" title="Documentation">📖</a> <a href="https://github.com/replicate/cog/issues?q=author%3ATheodotus1243" title="Bug reports">🐛</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/one1zero1one"><img src="https://avatars.githubusercontent.com/u/724604?v=4?s=100" width="100px;" alt="Daniel Radu"/><br /><sub><b>Daniel Radu</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=one1zero1one" title="Documentation">📖</a> <a href="https://github.com/replicate/cog/issues?q=author%3Aone1zero1one" title="Bug reports">🐛</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Etelis"><img src="https://avatars.githubusercontent.com/u/92247226?v=4?s=100" width="100px;" alt="Itay Etelis"/><br /><sub><b>Itay Etelis</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=Etelis" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="http://www.wavefunction.dev"><img src="https://avatars.githubusercontent.com/u/54407820?v=4?s=100" width="100px;" alt="Gennaro Schiano"/><br /><sub><b>Gennaro Schiano</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=gschian0" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="http://andreknoerig.de"><img src="https://avatars.githubusercontent.com/u/481350?v=4?s=100" width="100px;" alt="André Knörig"/><br /><sub><b>André Knörig</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=aknoerig" title="Documentation">📖</a></td>
     </tr>
   </tbody>
 </table>

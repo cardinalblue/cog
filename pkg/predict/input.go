@@ -44,7 +44,6 @@ func NewInputs(keyVals map[string][]string) Inputs {
 func NewInputsWithBaseDir(keyVals map[string]string, baseDir string) Inputs {
 	input := Inputs{}
 	for key, val := range keyVals {
-		val := val
 		if strings.HasPrefix(val, "@") {
 			val = filepath.Join(baseDir, val[1:])
 			input[key] = Input{File: &val}
@@ -58,17 +57,18 @@ func NewInputsWithBaseDir(keyVals map[string]string, baseDir string) Inputs {
 func (inputs *Inputs) toMap() (map[string]any, error) {
 	keyVals := map[string]any{}
 	for key, input := range *inputs {
-		if input.String != nil {
+		switch {
+		case input.String != nil:
 			// Directly assign the string value
 			keyVals[key] = *input.String
-		} else if input.File != nil {
+		case input.File != nil:
 			// Single file handling: read content and convert to a data URL
 			dataURL, err := fileToDataURL(*input.File)
 			if err != nil {
 				return keyVals, err
 			}
 			keyVals[key] = dataURL
-		} else if input.Array != nil {
+		case input.Array != nil:
 			// Handle array, potentially containing file paths
 			dataURLs := make([]string, len(*input.Array))
 			for i, elem := range *input.Array {

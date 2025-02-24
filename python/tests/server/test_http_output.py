@@ -110,7 +110,7 @@ from .conftest import uses_predictor
 def test_json_output_numpy(client, match):
     resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.status_code == 200
-    assert resp.json() == match({"predictions": [1.0]})
+    assert resp.json() == match({"predictions": 1.0, "status": "succeeded"})
 
 
 # Not supported yet
@@ -135,6 +135,7 @@ def test_iterator_of_list_of_complex_output(client, match):
     assert resp.json() == match(
         {
             "predictions": [[[{"text": "hello"}]]],
+            "status": "succeeded",
         }
     )
     assert resp.status_code == 200
@@ -234,3 +235,12 @@ def test_cb_output_error(client, match):
             ]
         }
     )
+
+
+if not PYDANTIC_V2:
+
+    @uses_predictor("output_numpy")
+    def test_json_output_numpy(client, match):
+        resp = client.post("/predictions")
+        assert resp.status_code == 200
+        assert resp.json() == match({"output": 1.0, "status": "succeeded"})

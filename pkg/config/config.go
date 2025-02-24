@@ -15,11 +15,13 @@ import (
 
 	"github.com/replicate/cog/pkg/util/console"
 	"github.com/replicate/cog/pkg/util/slices"
+	"github.com/replicate/cog/pkg/util/version"
 )
 
 var (
 	BuildSourceEpochTimestamp int64 = -1
 	BuildXCachePath           string
+	PipPackageNameRegex       = regexp.MustCompile(`^([^>=<~ \n[#]+)`)
 )
 
 // TODO(andreas): support conda packages
@@ -30,6 +32,7 @@ var (
 const (
 	MinimumMajorPythonVersion int = 3
 	MinimumMinorPythonVersion int = 8
+	MinimumMajorCudaVersion   int = 11
 )
 
 type RunItem struct {
@@ -71,7 +74,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Build: &Build{
 			GPU:           false,
-			PythonVersion: "3.8",
+			PythonVersion: "3.12",
 		},
 	}
 }
@@ -179,6 +182,10 @@ func (c *Config) TorchvisionVersion() (string, bool) {
 	return c.pythonPackageVersion("torchvision")
 }
 
+func (c *Config) TorchaudioVersion() (string, bool) {
+	return c.pythonPackageVersion("torchaudio")
+}
+
 func (c *Config) TensorFlowVersion() (string, bool) {
 	return c.pythonPackageVersion("tensorflow")
 }
@@ -222,6 +229,9 @@ func (c *Config) pythonPackageVersion(name string) (version string, ok bool) {
 func splitPythonVersion(version string) (major int, minor int, err error) {
 	version = strings.TrimSpace(version)
 	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, fmt.Errorf("missing minor version in %s", version)
+	}
 	majorStr, minorStr := parts[0], parts[1]
 	major, err = strconv.Atoi(majorStr)
 	if err != nil {
@@ -302,15 +312,18 @@ func (c *Config) ValidateAndComplete(projectDir string) error {
 }
 
 // PythonRequirementsForArch returns a requirements.txt file with all the GPU packages resolved for given OS and architecture.
-func (c *Config) PythonRequirementsForArch(goos string, goarch string, excludePackages []string) (string, error) {
+func (c *Config) PythonRequirementsForArch(goos string, goarch string, includePackages []string) (string, error) {
 	packages := []string{}
 	findLinksSet := map[string]bool{}
 	extraIndexURLSet := map[string]bool{}
-	for _, pkg := range c.Build.pythonRequirementsContent {
-		if slices.ContainsString(excludePackages, pkg) {
-			continue
-		}
 
+	includePackageNames := []string{}
+	for _, pkg := range includePackages {
+		includePackageNames = append(includePackageNames, packageName(pkg))
+	}
+
+	// Include all the requirements and remove our include packages if they exist
+	for _, pkg := range c.Build.pythonRequirementsContent {
 		archPkg, findLinksList, extraIndexURLs, err := c.pythonPackageForArch(pkg, goos, goarch)
 		if err != nil {
 			return "", err
@@ -326,7 +339,25 @@ func (c *Config) PythonRequirementsForArch(goos string, goarch string, excludePa
 				extraIndexURLSet[u] = true
 			}
 		}
+
+		packageName := packageName(archPkg)
+		if packageName != "" {
+			foundIdx := -1
+			for i, includePkg := range includePackageNames {
+				if includePkg == packageName {
+					foundIdx = i
+					break
+				}
+			}
+			if foundIdx != -1 {
+				includePackageNames = append(includePackageNames[:foundIdx], includePackageNames[foundIdx+1:]...)
+				includePackages = append(includePackages[:foundIdx], includePackages[foundIdx+1:]...)
+			}
+		}
 	}
+
+	// If we still have some include packages add them in
+	packages = append(packages, includePackages...)
 
 	// Create final requirements.txt output
 	// Put index URLs first
@@ -358,7 +389,8 @@ func (c *Config) pythonPackageForArch(pkg, goos, goarch string) (actualPackage s
 
 	extraIndexURL := ""
 	findLinks := ""
-	if name == "tensorflow" {
+	switch name {
+	case "tensorflow":
 		if c.Build.GPU {
 			name, version, err = tfGPUPackage(version, c.Build.CUDA)
 			if err != nil {
@@ -366,7 +398,7 @@ func (c *Config) pythonPackageForArch(pkg, goos, goarch string) (actualPackage s
 			}
 		}
 		// There is no CPU case for tensorflow because the default package is just the CPU package, so no transformation of version is needed
-	} else if name == "torch" {
+	case "torch":
 		if c.Build.GPU {
 			name, version, findLinks, extraIndexURL, err = torchGPUPackage(version, c.Build.CUDA)
 			if err != nil {
@@ -378,7 +410,7 @@ func (c *Config) pythonPackageForArch(pkg, goos, goarch string) (actualPackage s
 				return "", nil, nil, err
 			}
 		}
-	} else if name == "torchvision" {
+	case "torchvision":
 		if c.Build.GPU {
 			name, version, findLinks, extraIndexURL, err = torchvisionGPUPackage(version, c.Build.CUDA)
 			if err != nil {
@@ -404,7 +436,30 @@ func (c *Config) pythonPackageForArch(pkg, goos, goarch string) (actualPackage s
 	return pkgWithVersion, findLinksList, extraIndexURLs, nil
 }
 
+func ValidateCudaVersion(cudaVersion string) error {
+	parts := strings.Split(cudaVersion, ".")
+	if len(parts) < 2 {
+		return fmt.Errorf("CUDA version %q must include both major and minor versions", cudaVersion)
+	}
+
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("Invalid major version in CUDA version %q", cudaVersion)
+	}
+
+	if major < MinimumMajorCudaVersion {
+		return fmt.Errorf("Minimum supported CUDA version is %d. requested %q", MinimumMajorCudaVersion, cudaVersion)
+	}
+	return nil
+}
+
 func (c *Config) validateAndCompleteCUDA() error {
+	if c.Build.CUDA != "" {
+		if err := ValidateCudaVersion(c.Build.CUDA); err != nil {
+			return err
+		}
+	}
+
 	if c.Build.CUDA != "" && c.Build.CuDNN != "" {
 		compatibleCuDNNs := compatibleCuDNNsForCUDA(c.Build.CUDA)
 		if !sliceContains(compatibleCuDNNs, c.Build.CuDNN) {
@@ -424,46 +479,51 @@ Compatible CuDNN versions are: %s`, c.Build.CUDA, c.Build.CuDNN, strings.Join(co
 	// The pre-compiled TensorFlow binaries requires specific CUDA/CuDNN versions to be
 	// installed, but Torch bundles their own CUDA/CuDNN libraries.
 
-	if tfVersion != "" {
-		if c.Build.CUDA == "" {
+	switch {
+	case tfVersion != "":
+		switch {
+		case c.Build.CUDA == "":
 			if tfCuDNN == "" {
 				return fmt.Errorf("Cog doesn't know what CUDA version is compatible with tensorflow==%s. You might need to upgrade Cog: https://github.com/replicate/cog#upgrade\n\nIf that doesn't work, you need to set the 'cuda' option in cog.yaml to set what version to use. You might be able to find this out from https://www.tensorflow.org/", tfVersion)
 			}
 			console.Debugf("Setting CUDA to version %s from Tensorflow version", tfCUDA)
 			c.Build.CUDA = tfCUDA
-		} else if tfCUDA != c.Build.CUDA {
-			// TODO: can we suggest a CUDA version known to be compatible?
+		case tfCUDA == "" || version.EqualMinor(tfCUDA, c.Build.CUDA):
 			console.Warnf("Cog doesn't know if CUDA %s is compatible with Tensorflow %s. This might cause CUDA problems.", c.Build.CUDA, tfVersion)
+			if tfCUDA != "" {
+				console.Warnf("Try %s instead?", tfCUDA)
+			}
 		}
-		if c.Build.CuDNN == "" && tfCuDNN != "" {
+
+		switch {
+		case c.Build.CuDNN == "" && tfCuDNN != "":
 			console.Debugf("Setting CuDNN to version %s from Tensorflow version", tfCuDNN)
 			c.Build.CuDNN = tfCuDNN
-		} else if c.Build.CuDNN == "" {
+		case c.Build.CuDNN == "":
 			c.Build.CuDNN, err = latestCuDNNForCUDA(c.Build.CUDA)
 			if err != nil {
 				return err
 			}
 			console.Debugf("Setting CuDNN to version %s", c.Build.CUDA)
-		} else if tfCuDNN != c.Build.CuDNN {
+		case tfCuDNN != c.Build.CuDNN:
 			console.Warnf("Cog doesn't know if cuDNN %s is compatible with Tensorflow %s. This might cause CUDA problems.", c.Build.CuDNN, tfVersion)
 			return fmt.Errorf(`The specified cuDNN version %s is not compatible with tensorflow==%s.
-Compatible cuDNN version is: %s`,
-				c.Build.CuDNN, tfVersion, tfCuDNN)
+Compatible cuDNN version is: %s`, c.Build.CuDNN, tfVersion, tfCuDNN)
 		}
-	} else if torchVersion != "" {
-		if c.Build.CUDA == "" {
+	case torchVersion != "":
+		switch {
+		case c.Build.CUDA == "":
 			if len(torchCUDAs) == 0 {
 				return fmt.Errorf("Cog doesn't know what CUDA version is compatible with torch==%s. You might need to upgrade Cog: https://github.com/replicate/cog#upgrade\n\nIf that doesn't work, you need to set the 'cuda' option in cog.yaml to set what version to use. You might be able to find this out from https://pytorch.org/", torchVersion)
 			}
 			c.Build.CUDA = latestCUDAFrom(torchCUDAs)
-			c.Build.CUDA, err = resolveMinorToPatch(c.Build.CUDA)
-			if err != nil {
-				return err
-			}
 			console.Debugf("Setting CUDA to version %s from Torch version", c.Build.CUDA)
-		} else if !slices.ContainsString(torchCUDAs, c.Build.CUDA) {
+		case len(slices.FilterString(torchCUDAs, func(torchCUDA string) bool { return version.EqualMinor(torchCUDA, c.Build.CUDA) })) == 0:
 			// TODO: can we suggest a CUDA version known to be compatible?
 			console.Warnf("Cog doesn't know if CUDA %s is compatible with PyTorch %s. This might cause CUDA problems.", c.Build.CUDA, torchVersion)
+			if len(torchCUDAs) > 0 {
+				console.Warnf("Try %s instead?", torchCUDAs[len(torchCUDAs)-1])
+			}
 		}
 
 		if c.Build.CuDNN == "" {
@@ -473,7 +533,7 @@ Compatible cuDNN version is: %s`,
 			}
 			console.Debugf("Setting CuDNN to version %s", c.Build.CUDA)
 		}
-	} else {
+	default:
 		if c.Build.CUDA == "" {
 			c.Build.CUDA = defaultCUDA()
 			console.Debugf("Setting CUDA to version %s", c.Build.CUDA)
@@ -541,4 +601,12 @@ func sliceContains(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func packageName(pipRequirement string) string {
+	match := PipPackageNameRegex.FindStringSubmatch(pipRequirement)
+	if len(match) <= 1 {
+		return ""
+	}
+	return match[1]
 }

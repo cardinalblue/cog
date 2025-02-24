@@ -2,12 +2,14 @@ import importlib.util
 import os
 import os.path
 import sys
-import typing as t
 from datetime import datetime
 from enum import Enum
 from types import ModuleType
+from typing import Any, Dict, List, Optional, Type
 
 import pydantic
+
+from .types import PYDANTIC_V2
 
 BUNDLED_SCHEMA_PATH = ".cog/schema.py"
 
@@ -20,7 +22,7 @@ class Status(str, Enum):
     FAILED = "failed"
 
     @staticmethod
-    def is_terminal(status: t.Optional["Status"]) -> bool:
+    def is_terminal(status: Optional["Status"]) -> bool:
         return status in {Status.SUCCEEDED, Status.CANCELED, Status.FAILED}
 
 
@@ -31,7 +33,7 @@ class WebhookEvent(str, Enum):
     COMPLETED = "completed"
 
     @classmethod
-    def default_events(cls) -> t.List["WebhookEvent"]:
+    def default_events(cls) -> List["WebhookEvent"]:
         # if this is a set, it gets serialized to an array with an unstable ordering
         # so even though it's logically a set, have it as a list for deterministic schemas
         # note: this change removes "uniqueItems":true
@@ -42,80 +44,101 @@ class PredictionBaseModel(pydantic.BaseModel, extra=pydantic.Extra.allow):
     pass
 
 
+if PYDANTIC_V2:
+    from pydantic.networks import UrlConstraints
+    from pydantic_core import Url
+    from typing_extensions import Annotated
+
+    WebhookUrl = Annotated[
+        Url, UrlConstraints(allowed_schemes=["http", "https"], max_length=65536)
+    ]
+else:
+    WebhookUrl = pydantic.AnyUrl
+
+
 class PredictionRequest(PredictionBaseModel):
-    id: t.Optional[str]
-    created_at: t.Optional[datetime]
+    id: Optional[str] = None
+    created_at: Optional[datetime] = None
 
     # TODO: deprecate this
-    output_file_prefix: t.Optional[str]
+    output_file_prefix: Optional[str] = None
 
-    webhook: t.Optional[pydantic.AnyHttpUrl]
-    webhook_events_filter: t.Optional[t.List[WebhookEvent]] = (
-        WebhookEvent.default_events()
+    webhook: Optional[WebhookUrl] = None
+    webhook_events_filter: Optional[List[WebhookEvent]] = pydantic.Field(
+        default=WebhookEvent.default_events(),
     )
 
     @classmethod
-    def with_types(cls, input_type: t.Type[t.Any]) -> t.Any:
+    def with_types(cls, input_type: Type[Any]) -> Any:
         # [compat] Input is implicitly optional -- previous versions of the
         # Cog HTTP API allowed input to be omitted (e.g. for models that don't
         # have any inputs). We should consider changing this in future.
         return pydantic.create_model(
-            cls.__name__, __base__=cls, input=(input_type, ...)
+            cls.__name__, __base__=cls, input=(Optional[input_type], ...)
         )
 
 
 class NewPredictionRequest(PredictionBaseModel):
-    instances: t.List[t.Any]
+    instances: List[Any]
 
     @classmethod
-    def with_types(cls, input_type: t.Type[t.Any]) -> t.Any:
+    def with_types(cls, input_type: Type[Any]) -> Any:
         # [compat] Input is implicitly optional -- previous versions of the
         # Cog HTTP API allowed input to be omitted (e.g. for models that don't
         # have any inputs). We should consider changing this in future.
         return pydantic.create_model(
-            cls.__name__, __base__=cls, instances=(t.List[input_type], ...)
+            cls.__name__, __base__=cls, instances=(List[input_type], ...)
         )
 
 
 class PredictionResponse(PredictionBaseModel):
-    output: t.Any
+    output: Any = None
 
-    id: t.Optional[str]
-    version: t.Optional[str]
+    id: Optional[str] = None
+    version: Optional[str] = None
 
-    created_at: t.Optional[datetime]
-    started_at: t.Optional[datetime]
-    completed_at: t.Optional[datetime]
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
     logs: str = ""
-    error: t.Optional[str]
-    status: t.Optional[Status]
+    error: Optional[str] = None
+    status: Optional[Status] = None
 
-    metrics: t.Optional[t.Dict[str, t.Any]]
+    metrics: Optional[Dict[str, Any]]
 
-    error_type: t.Optional[str]
-    http_status_code: t.Optional[int]
+    error_type: Optional[str]
+    http_status_code: Optional[int]
+
+    # This is used to track a fatal exception that occurs during a prediction.
+    # "Fatal" means that we require the worker to be shut down to recover:
+    # regular exceptions raised during predict are handled and do not use this
+    # field.
+    _fatal_exception: Optional[BaseException] = pydantic.PrivateAttr(default=None)
 
     @classmethod
-    def with_types(cls, output_type: t.Type[t.Any]) -> t.Any:
+    def with_types(cls, input_type: Type[Any], output_type: Type[Any]) -> Any:
         # [compat] Input is implicitly optional -- previous versions of the
         # Cog HTTP API allowed input to be omitted (e.g. for models that don't
         # have any inputs). We should consider changing this in future.
         return pydantic.create_model(
-            cls.__name__, __base__=cls, output=(output_type, None)
+            cls.__name__,
+            __base__=cls,
+            input=(Optional[input_type], None),
+            output=(Optional[output_type], None),
         )
 
 
 class NewPredictionResponse(PredictionBaseModel):
-    predictions: t.List[t.Any]
+    predictions: List[Any]
 
     @classmethod
-    def with_types(cls, output_type: t.Type[t.Any]) -> t.Any:
+    def with_types(cls, output_type: Type[Any]) -> Any:
         # [compat] Input is implicitly optional -- previous versions of the
         # Cog HTTP API allowed input to be omitted (e.g. for models that don't
         # have any inputs). We should consider changing this in future.
         return pydantic.create_model(
-            cls.__name__, __base__=cls, predictions=(t.List[output_type], None)
+            cls.__name__, __base__=cls, predictions=(List[output_type], None)
         )
 
 
@@ -127,7 +150,7 @@ class TrainingResponse(PredictionResponse):
     pass
 
 
-def create_schema_module() -> t.Optional[ModuleType]:
+def create_schema_module() -> Optional[ModuleType]:
     if not os.path.exists(BUNDLED_SCHEMA_PATH):
         return None
     name = "cog.bundled_schema"

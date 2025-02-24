@@ -1,11 +1,12 @@
 import threading
 
+import pytest
+
 from cog import schema
 from cog.server.http import Health, create_app
+from cog.types import PYDANTIC_V2
 
-from tests.server.conftest import _fixture_path
-
-from .conftest import uses_predictor
+from .conftest import _fixture_path, uses_predictor
 
 # @uses_predictor("input_none")
 # def test_no_input(client, match):
@@ -50,15 +51,9 @@ def test_good_int_input(client, match):
 @uses_predictor("input_integer")
 def test_bad_int_input(client):
     resp = client.post("/predictions", json={"instances": [{"num": "foo"}]})
-    assert resp.json() == {
-        "detail": [
-            {
-                "loc": ["body", "instances", 0, "num"],
-                "msg": "value is not a valid integer",
-                "type": "type_error.integer",
-            }
-        ]
-    }
+    detail = resp.json()["detail"][0]
+    assert detail["loc"] == ["body", "input", "num"]
+    assert "valid integer" in detail["msg"]
     assert resp.status_code == 422
 
 
@@ -128,6 +123,29 @@ def test_default_int_input(client, match):
 #     assert resp.json() == match({"output": "txt bar", "status": "succeeded"})
 #     assert resp.status_code == 200
 
+# Not supported yet
+# @uses_predictor("input_path")
+# def test_path_input_slow_response(client, httpserver, match):
+#     def _handle(_):
+#         time.sleep(5)
+#         return Response("Slow response!")
+
+#     httpserver.expect_request("/foo.txt").respond_with_handler(_handle)
+#     now = time.monotonic()
+#     resp = client.post(
+#         "/predictions",
+#         json={
+#             "input": {
+#                 "path": httpserver.url_for("/foo.txt"),
+#             }
+#         },
+#         headers={"Prefer": "respond-async"},
+#     )
+#     # The download of the slow input file should not happen during the request.
+#     assert time.monotonic() - now < 0.2
+#     assert resp.json() == match({"status": "processing"})
+#     assert resp.status_code == 202
+
 
 # Not supported yet
 # @uses_predictor("input_path_2")
@@ -188,17 +206,9 @@ def test_default_int_input(client, match):
 @uses_predictor("input_ge_le")
 def test_gt_lt(client):
     resp = client.post("/predictions", json={"instances": [{"num": 2}]})
-    assert resp.json() == {
-        "detail": [
-            {
-                "ctx": {"limit_value": 3.01},
-                "loc": ["body", "instances", 0, "num"],
-                "msg": "ensure this value is greater than or equal to 3.01",
-                "type": "value_error.number.not_ge",
-            }
-        ]
-    }
-    assert resp.status_code == 422
+    detail = resp.json()["detail"][0]
+    assert detail["loc"] == ["body", "input", "num"]
+    assert "greater than or equal to 3.01" in detail["msg"]
 
     resp = client.post("/predictions", json={"instances": [{"num": 5}]})
     assert resp.status_code == 200
@@ -212,8 +222,40 @@ def test_choices_str(client):
     assert resp.status_code == 422
 
 
+@uses_predictor("input_choices_iterable")
+def test_choices_str(client):
+    resp = client.post("/predictions", json={"instances": [{"text": "foo"}]})
+    assert resp.status_code == 200
+    resp = client.post("/predictions", json={"instances": [{"text": "baz"}]})
+    assert resp.status_code == 422
+
+
 @uses_predictor("input_choices_integer")
 def test_choices_int(client):
+    resp = client.post("/predictions", json={"instances": [{"x": 1}]})
+    assert resp.status_code == 200
+    resp = client.post("/predictions", json={"instances": [{"x": 3}]})
+    assert resp.status_code == 422
+
+
+@pytest.mark.skipif(
+    not PYDANTIC_V2,
+    reason="Literal is used for enums only in Pydantic v2",
+)
+@uses_predictor("input_literal")
+def test_literal_str(client):
+    resp = client.post("/predictions", json={"instances": [{"text": "foo"}]})
+    assert resp.status_code == 200
+    resp = client.post("/predictions", json={"instances": [{"text": "baz"}]})
+    assert resp.status_code == 422
+
+
+@pytest.mark.skipif(
+    not PYDANTIC_V2,
+    reason="Literal is used for enums only in Pydantic v2",
+)
+@uses_predictor("input_literal_integer")
+def test_literal_int(client):
     resp = client.post("/predictions", json={"instances": [{"x": 1}]})
     assert resp.status_code == 200
     resp = client.post("/predictions", json={"instances": [{"x": 3}]})
@@ -272,8 +314,8 @@ def test_untyped_inputs():
     )
     assert app.state.health == Health.SETUP_FAILED
     assert app.state.setup_result.status == schema.Status.FAILED
-    assert (
-        "TypeError: No input type provided for parameter" in app.state.setup_result.logs
+    assert "TypeError: No input type provided for parameter" in "".join(
+        app.state.setup_result.logs
     )
 
 

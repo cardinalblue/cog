@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/replicate/cog/pkg/docker"
 	"github.com/replicate/cog/pkg/global"
@@ -63,6 +64,10 @@ func login(cmd *cobra.Command, args []string) error {
 	}
 	token = strings.TrimSpace(token)
 
+	if err := checkTokenFormat(token); err != nil {
+		return err
+	}
+
 	username, err := verifyToken(registryHost, token)
 	if err != nil {
 		return err
@@ -105,12 +110,19 @@ func readTokenInteractively(registryHost string) (string, error) {
 	maybeOpenBrowser(url)
 
 	console.Info("")
-	console.Info("Once you've signed in, copy the authentication token from that web page, paste it here, then hit enter:")
-	token, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	console.Info("Once you've signed in, copy the token from that web page, paste it here, then hit enter:")
+
+	fmt.Print("CLI auth token: ")
+	// Read the token securely, masking the input
+	tokenBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Failed to read token: %w", err)
 	}
-	return token, nil
+
+	// Print a newline after the hidden input
+	fmt.Println()
+
+	return string(tokenBytes), nil
 }
 
 func getDisplayTokenURL(registryHost string) (string, error) {
@@ -149,6 +161,13 @@ func maybeOpenBrowser(url string) {
 	case "darwin":
 		_ = exec.Command("open", url).Start()
 	}
+}
+
+func checkTokenFormat(token string) error {
+	if strings.HasPrefix(token, "r8_") {
+		return fmt.Errorf("That looks like a Replicate API token, not a CLI auth token. Please fetch a token from https://replicate.com/auth/token to log in!")
+	}
+	return nil
 }
 
 func verifyToken(registryHost string, token string) (username string, err error) {

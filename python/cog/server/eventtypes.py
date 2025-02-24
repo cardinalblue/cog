@@ -40,8 +40,3 @@ class Done:
     error_detail: str = ""
     error_type: Optional[str] = None
     http_status_code: Optional[int] = None
-
-
-@define
-class Heartbeat:
-    pass

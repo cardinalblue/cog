@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/exp/slices"
+
 	"github.com/replicate/cog/pkg/util"
 	"github.com/replicate/cog/pkg/util/console"
 
@@ -59,13 +61,11 @@ type TorchCompatibility struct {
 }
 
 func (c *TorchCompatibility) TorchVersion() string {
-	parts := strings.Split(c.Torch, "+")
-	return parts[0]
+	return version.StripModifier(c.Torch)
 }
 
 func (c *TorchCompatibility) TorchvisionVersion() string {
-	parts := strings.Split(c.Torchvision, "+")
-	return parts[0]
+	return version.StripModifier(c.Torchvision)
 }
 
 type CUDABaseImage struct {
@@ -111,7 +111,7 @@ func init() {
 	filteredTorchCompatibilityMatrix := []TorchCompatibility{}
 	for _, compat := range torchCompatibilityMatrix {
 		for _, cudaBaseImage := range CUDABaseImages {
-			if compat.CUDA != nil && version.Matches(*compat.CUDA, cudaBaseImage.CUDA) {
+			if compat.CUDA == nil || version.Matches(*compat.CUDA, cudaBaseImage.CUDA) {
 				filteredTorchCompatibilityMatrix = append(filteredTorchCompatibilityMatrix, compat)
 				break
 			}
@@ -120,13 +120,62 @@ func init() {
 	TorchCompatibilityMatrix = filteredTorchCompatibilityMatrix
 }
 
+func cudaVersionFromTorchPlusVersion(ver string) (string, string) {
+	const cudaVersionPrefix = "cu"
+
+	// Split the version string by the '+' character.
+	versionParts := strings.Split(ver, "+")
+
+	// If there is no '+' in the version string, return the original string with an empty CUDA version.
+	if len(versionParts) <= 1 {
+		return "", ver
+	}
+
+	// Extract the part after the last '+'.
+	cudaVersionPart := versionParts[len(versionParts)-1]
+
+	// Check if the extracted part has the CUDA version prefix.
+	if !strings.HasPrefix(cudaVersionPart, cudaVersionPrefix) {
+		return "", ver
+	}
+
+	// Trim the CUDA version prefix and reformat the version string.
+	cleanVersion := strings.TrimPrefix(cudaVersionPart, cudaVersionPrefix)
+	if len(cleanVersion) < 2 {
+		return "", ver // Handle case where cleanVersion is too short to reformat.
+	}
+
+	// Insert a dot before the last character to format it as expected.
+	cleanVersion = cleanVersion[:len(cleanVersion)-1] + "." + cleanVersion[len(cleanVersion)-1:]
+
+	// Return the reformatted CUDA version and the main version.
+	return cleanVersion, versionParts[0]
+}
+
 func cudasFromTorch(ver string) ([]string, error) {
 	cudas := []string{}
+
+	// Check the version modifier on torch (such as +cu118)
+	cudaVer, ver := cudaVersionFromTorchPlusVersion(ver)
+	if len(cudaVer) > 0 {
+		for _, compat := range TorchCompatibilityMatrix {
+			if compat.CUDA == nil {
+				continue
+			}
+			if version.Matches(ver, compat.TorchVersion()) && *compat.CUDA == cudaVer {
+				cudas = append(cudas, *compat.CUDA)
+				return cudas, nil
+			}
+		}
+	}
+
 	for _, compat := range TorchCompatibilityMatrix {
-		if ver == compat.TorchVersion() && compat.CUDA != nil {
+		if version.Matches(ver, compat.TorchVersion()) && compat.CUDA != nil {
 			cudas = append(cudas, *compat.CUDA)
 		}
 	}
+	slices.Sort(cudas)
+
 	return cudas, nil
 }
 
@@ -173,23 +222,6 @@ func latestCUDAFrom(cudas []string) string {
 	return latest
 }
 
-// resolveMinorToPatch takes a minor version string (e.g. 11.1) and resolves it to its full patch version (11.1.1)
-// If no patch version exists, it returns the plain old minor version (e.g. 10.3)
-func resolveMinorToPatch(minor string) (string, error) {
-	patch := ""
-	for _, image := range CUDABaseImages {
-		if version.EqualMinor(minor, image.CUDA) {
-			if patch == "" || version.Greater(image.CUDA, patch) {
-				patch = image.CUDA
-			}
-		}
-	}
-	if patch == "" {
-		return "", fmt.Errorf("CUDA version %s could not be found", minor)
-	}
-	return patch, nil
-}
-
 func latestCuDNNForCUDA(cuda string) (string, error) {
 	cuDNNs := []string{}
 	for _, image := range CUDABaseImages {
@@ -221,12 +253,24 @@ func versionGreater(a string, b string) (bool, error) {
 }
 
 func CUDABaseImageFor(cuda string, cuDNN string) (string, error) {
+	var images []CUDABaseImage
 	for _, image := range CUDABaseImages {
 		if version.Matches(cuda, image.CUDA) && image.CuDNN == cuDNN {
-			return image.ImageTag(), nil
+			images = append(images, image)
 		}
 	}
-	return "", fmt.Errorf("No matching base image for CUDA %s and CuDNN %s", cuda, cuDNN)
+	if len(images) == 0 {
+		return "", fmt.Errorf("No matching base image for CUDA %s and CuDNN %s", cuda, cuDNN)
+	}
+
+	sort.Slice(images, func(i, j int) bool {
+		if images[i].CUDA != images[j].CUDA {
+			return version.MustVersion(images[i].CUDA).Greater(version.MustVersion(images[j].CUDA))
+		}
+		return images[i].Ubuntu > images[j].Ubuntu
+	})
+
+	return images[0].ImageTag(), nil
 }
 
 func tfGPUPackage(ver string, cuda string) (name string, cpuVersion string, err error) {
@@ -256,8 +300,7 @@ func torchGPUPackage(ver string, cuda string) (name, cpuVersion, findLinks, extr
 	// that is at most as high as the requested cuda version
 	var latest *TorchCompatibility
 	for _, compat := range TorchCompatibilityMatrix {
-		compat := compat
-		if compat.TorchVersion() != ver || compat.CUDA == nil {
+		if !version.Matches(compat.TorchVersion(), ver) || compat.CUDA == nil {
 			continue
 		}
 		greater, err := versionGreater(*compat.CUDA, cuda)
@@ -286,7 +329,7 @@ func torchGPUPackage(ver string, cuda string) (name, cpuVersion, findLinks, extr
 		return "torch", ver, "", "", nil
 	}
 
-	return "torch", latest.Torch, latest.FindLinks, latest.ExtraIndexURL, nil
+	return "torch", version.StripModifier(latest.Torch), latest.FindLinks, latest.ExtraIndexURL, nil
 }
 
 func torchvisionCPUPackage(ver, goos, goarch string) (name, cpuVersion, findLinks, extraIndexURL string, err error) {
@@ -305,7 +348,6 @@ func torchvisionGPUPackage(ver, cuda string) (name, cpuVersion, findLinks, extra
 	// most as high as the requested cuda version
 	var latest *TorchCompatibility
 	for _, compat := range TorchCompatibilityMatrix {
-		compat := compat
 		if compat.TorchvisionVersion() != ver || compat.CUDA == nil {
 			continue
 		}
@@ -335,7 +377,7 @@ func torchvisionGPUPackage(ver, cuda string) (name, cpuVersion, findLinks, extra
 		return "torchvision", ver, "", "", nil
 	}
 
-	return "torchvision", latest.Torchvision, latest.FindLinks, latest.ExtraIndexURL, nil
+	return "torchvision", version.StripModifier(latest.Torchvision), latest.FindLinks, latest.ExtraIndexURL, nil
 }
 
 // aarch64 packages don't have +cpu suffix: https://download.pytorch.org/whl/torch_stable.html
