@@ -27,7 +27,7 @@ workflows:
     jobs:
       # Run the job with the default Python version first
       - test-python:
-          name: test-python-v3.8
+          name: test-python-v3.9
           filters:
             branches:
               ignore: "main"
@@ -38,6 +38,6 @@ workflows:
               ignore: "main"
           matrix:
             parameters:
-              python-version: ["3.9", "3.10", "3.11", "3.12"] # 3.8 has already been tested
+              python-version: ["3.10", "3.11", "3.12", "3.13"] # 3.9 has already been tested
           requires:
-            - test-python-v3.8
+            - test-python-v3.9
