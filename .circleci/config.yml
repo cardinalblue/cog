@@ -26,8 +26,9 @@ jobs:
           name: Build and run tests
           command: |
             uv build
+            ls -la dist
             export TOX_PYTHON=py$(echo "<< parameters.python-version >>" | tr -d .)
-            uv run python -Im tox run --installpkg "dist/*.whl" -e ${TOX_PYTHON}-pydantic<< parameters.pydantic >>-tests
+            uv run python -Im tox run --installpkg "./dist/*.whl" -e ${TOX_PYTHON}-pydantic<< parameters.pydantic >>-tests
           environment:
             HYPOTHESIS_PROFILE: ci
 
