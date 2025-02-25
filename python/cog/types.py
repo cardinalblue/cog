@@ -288,6 +288,10 @@ class URLFile(io.IOBase):
     __slots__ = ("__target__", "__url__")
 
     def __init__(self, url: str) -> None:
+        # We need to set __url__ first, because running tests in python 3.13,
+        # __repr__ is called when the object fails to initialize. Not sure why.
+        object.__setattr__(self, "__url__", url)
+
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {
             "http",
@@ -297,7 +301,6 @@ class URLFile(io.IOBase):
                 "URLFile requires URL to conform to HTTP or HTTPS protocol"
             )
         object.__setattr__(self, "name", os.path.basename(parsed.path))
-        object.__setattr__(self, "__url__", url)
 
     # We provide __getstate__ and __setstate__ explicitly to ensure that the
     # object is always picklable.
