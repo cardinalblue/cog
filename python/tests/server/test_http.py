@@ -197,8 +197,7 @@ def test_openapi_specification(client, static_schema):
         "title": "int_choices",
         "type": "integer",
     }
-    assert schema["components"]["schemas"]["NewPredictionRequest"] == {
-        "additionalProperties": True,
+    new_prediction_request_schema = {
         "title": "NewPredictionRequest",
         "required": ["instances"],
         "type": "object",
@@ -210,8 +209,7 @@ def test_openapi_specification(client, static_schema):
             }
         },
     }
-    assert schema["components"]["schemas"]["NewPredictionResponse"] == {
-        "additionalProperties": True,
+    new_prediction_response_schema = {
         "title": "NewPredictionResponse",
         "type": "object",
         "properties": {
@@ -222,6 +220,18 @@ def test_openapi_specification(client, static_schema):
             }
         },
     }
+    if PYDANTIC_V2:
+        new_prediction_request_schema["additionalProperties"] = True
+        new_prediction_response_schema["additionalProperties"] = True
+
+    assert (
+        schema["components"]["schemas"]["NewPredictionRequest"]
+        == new_prediction_request_schema
+    )
+    assert (
+        schema["components"]["schemas"]["NewPredictionResponse"]
+        == new_prediction_response_schema
+    )
 
 
 @uses_predictor("openapi_custom_output_type")

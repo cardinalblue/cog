@@ -237,4 +237,4 @@ if not PYDANTIC_V2:
     def test_json_output_numpy(client, match):
         resp = client.post("/predictions", json={"instances": [{}]})
         assert resp.status_code == 200
-        assert resp.json() == match({"predictions": 1.0, "status": "succeeded"})
+        assert resp.json() == match({"predictions": [1.0]})
