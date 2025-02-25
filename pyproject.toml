@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 
 dependencies = [
   # intentionally loose. perhaps these should be vendored to not collide with user code?
@@ -31,7 +31,7 @@ dependencies = [
   'typing-compat; python_version < "3.8"',
   "typing_extensions>=4.6.0",
   "uvicorn[standard]>=0.12,<1",
-  "sentry-sdk>=1.35.0,<1.36.0"
+  "sentry-sdk>=1.35.0,<1.36.0",
 ]
 
 dynamic = ["version"]
