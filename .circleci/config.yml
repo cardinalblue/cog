@@ -17,7 +17,7 @@ jobs:
       - run:
           name: Install uv
           command: |
-            python -m pip install uv
+            pip install uv
       - run:
           name: Install Python dependencies
           command: |
