@@ -317,7 +317,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         #     request.input = {}
         all_results = []
         for instance in request.instances:
-            instance_request = schema.PredictionRequest(input=instance)
+            instance_request = PredictionRequest(input=instance)
             task_kwargs = {}
             if respond_async:
                 # For now, we only ask PredictionService to handle file uploads for
