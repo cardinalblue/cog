@@ -40,8 +40,15 @@ class WebhookEvent(str, Enum):
         return [cls.START, cls.OUTPUT, cls.LOGS, cls.COMPLETED]
 
 
-class PredictionBaseModel(pydantic.BaseModel, extra=pydantic.Extra.allow):
-    pass
+class PredictionBaseModel(pydantic.BaseModel):
+    if PYDANTIC_V2:
+        model_config = pydantic.ConfigDict(use_enum_values=True)  # type: ignore
+    else:
+
+        class Config:
+            # When using `choices`, the type is converted into an enum to validate
+            # But, after validation, we want to pass the actual value to predict(), not the enum object
+            use_enum_values = True
 
 
 if PYDANTIC_V2:
@@ -57,6 +64,7 @@ else:
 
 
 class PredictionRequest(PredictionBaseModel):
+    input: Dict[str, Any]
     id: Optional[str] = None
     created_at: Optional[datetime] = None
 
@@ -92,6 +100,7 @@ class NewPredictionRequest(PredictionBaseModel):
 
 
 class PredictionResponse(PredictionBaseModel):
+    input: Dict[str, Any]
     output: Any = None
 
     id: Optional[str] = None

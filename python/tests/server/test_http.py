@@ -220,9 +220,6 @@ def test_openapi_specification(client, static_schema):
             }
         },
     }
-    if PYDANTIC_V2:
-        new_prediction_request_schema["additionalProperties"] = True
-        new_prediction_response_schema["additionalProperties"] = True
 
     assert (
         schema["components"]["schemas"]["NewPredictionRequest"]
