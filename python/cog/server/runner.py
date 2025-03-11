@@ -368,8 +368,7 @@ class PredictTask(Task[schema.PredictionResponse]):
         self._p.status = schema.Status.FAILED
         self._p.error = error
         self._p.error_type = error_type
-        if http_status_code is not None:
-            self._p.http_status_code = http_status_code
+        self._p.http_status_code = http_status_code
         self._set_completed_at()
         self._send_webhook(schema.WebhookEvent.COMPLETED)
 
