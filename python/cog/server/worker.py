@@ -407,7 +407,8 @@ class ChildWorker(_spawn.Process):  # type: ignore
             traceback.print_exc()
             done.error = True
             done.error_detail = str(e)
-        except BaseException:
+        except BaseException as e:
+            capture_exception(e)  # Cpaturing exception with sentry
             # For SystemExit and friends we attempt to add some useful context
             # to the logs, but reraise to ensure the process dies.
             traceback.print_exc()
