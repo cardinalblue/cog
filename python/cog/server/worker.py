@@ -275,7 +275,6 @@ class ChildWorker(_spawn.Process):  # type: ignore
         self._events = LockedConn(events)
         self._tee_output = tee_output
         self._cancelable = False
-        self._events_lock = _spawn.Lock()
 
         super().__init__()
 
