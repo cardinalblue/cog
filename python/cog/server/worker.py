@@ -275,7 +275,6 @@ class ChildWorker(_spawn.Process):  # type: ignore
         self._events = LockedConn(events)
         self._tee_output = tee_output
         self._cancelable = False
-        self._events_lock = _spawn.Lock()
 
         super().__init__()
 
@@ -405,9 +404,11 @@ class ChildWorker(_spawn.Process):  # type: ignore
             done.http_status_code = e.http_status_code
         except Exception as e:
             capture_exception(e)  # Cpaturing exception with sentry
+            traceback.print_exc()
             done.error = True
             done.error_detail = str(e)
-        except BaseException:
+        except BaseException as e:
+            capture_exception(e)  # Cpaturing exception with sentry
             # For SystemExit and friends we attempt to add some useful context
             # to the logs, but reraise to ensure the process dies.
             traceback.print_exc()
