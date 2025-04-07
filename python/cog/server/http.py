@@ -332,10 +332,11 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
                     {"detail": "Already running a prediction"}, status_code=409
                 )
 
-            if hasattr(instance_request.input, "cleanup"):
-                predict_task.add_done_callback(
-                    lambda _: instance_request.input.cleanup()
-                )
+            # Added by Cog origin and we don't need it.
+            # if hasattr(instance_request.input, "cleanup"):
+            #     predict_task.add_done_callback(
+            #         lambda _: instance_request.input.cleanup()
+            #     )
 
             predict_task.add_done_callback(_handle_predict_done)
 
