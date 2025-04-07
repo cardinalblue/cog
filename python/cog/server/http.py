@@ -318,21 +318,23 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         all_results = []
         for instance in request.instances:
             instance_request = PredictionRequest(input=instance)
-            task_kwargs = {}
-            if respond_async:
-                # For now, we only ask PredictionService to handle file uploads for
-                # async predictions. This is unfortunate but required to ensure
-                # backwards-compatible behaviour for synchronous predictions.
-                task_kwargs["upload_url"] = upload_url
+            # CB: From Cog origin and we don't do the async mechanism in this way.
+            # task_kwargs = {}
+            # if respond_async:
+            #     # For now, we only ask PredictionService to handle file uploads for
+            #     # async predictions. This is unfortunate but required to ensure
+            #     # backwards-compatible behaviour for synchronous predictions.
+            #     task_kwargs["upload_url"] = upload_url
 
             try:
-                predict_task = runner.predict(instance_request, task_kwargs=task_kwargs)
+                # predict_task = runner.predict(instance_request, task_kwargs=task_kwargs)
+                predict_task = runner.predict(instance_request)
             except RunnerBusyError:
                 return JSONResponse(
                     {"detail": "Already running a prediction"}, status_code=409
                 )
 
-            # Added by Cog origin and we don't need it.
+            # CB: From Cog origin and we don't do the async mechanism in this way.
             # if hasattr(instance_request.input, "cleanup"):
             #     predict_task.add_done_callback(
             #         lambda _: instance_request.input.cleanup()
@@ -340,10 +342,11 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
 
             predict_task.add_done_callback(_handle_predict_done)
 
-            if respond_async:
-                return JSONResponse(
-                    jsonable_encoder(predict_task.result), status_code=202
-                )
+            # CB: From Cog origin and we don't do the async mechanism in this way.
+            # if respond_async:
+            #     return JSONResponse(
+            #         jsonable_encoder(predict_task.result), status_code=202
+            #     )
 
             # Otherwise, wait for the prediction to complete...
             predict_task.wait()
@@ -366,7 +369,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
                 body = {"detail": [detail_item]}
                 return JSONResponse(body, status_code=status_code)
             try:
-                _ = PredictionResponse(**response_object)
+                PredictionResponse(**response_object)
             except ValidationError as e:
                 _log_invalid_output(e)
                 raise HTTPException(status_code=500, detail=str(e)) from e
