@@ -10,41 +10,49 @@ authors = [{ name = "Replicate", email = "team@replicate.com" }]
 license.file = "LICENSE"
 urls."Source" = "https://github.com/replicate/cog"
 
-requires-python = ">=3.7"
+classifiers = [
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.9"
+
 dependencies = [
   # intentionally loose. perhaps these should be vendored to not collide with user code?
   "attrs>=20.1,<24",
-  "fastapi>=0.75.2,<0.99.0",
-  "pydantic>=1.9,<2",
+  "fastapi>=0.75.2,<0.111.0",
+  "pydantic>=1.9,<3",
   "PyYAML",
   "requests>=2,<3",
   "structlog>=20,<25",
   'typing-compat; python_version < "3.8"',
-  "typing_extensions>=4.4.0",
+  "typing_extensions>=4.6.0",
   "uvicorn[standard]>=0.12,<1",
-  "sentry-sdk>=1.35.0,<1.36.0"
+  "sentry-sdk>=1.35.0,<1.36.0",
 ]
 
-optional-dependencies = { "dev" = [
-  "black",
-  "build",
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = ["build", "setuptools_scm", "tox", "tox-uv"]
+
+tests = [
   "httpx",
   'hypothesis<6.80.0; python_version < "3.8"',
   'hypothesis; python_version >= "3.8"',
   'numpy<1.22.0; python_version < "3.8"',
   'numpy; python_version >= "3.8"',
   "pillow",
-  "pyright==1.1.347",
   "pytest",
   "pytest-httpserver",
-  "pytest-rerunfailures",
+  "pytest-timeout",
   "pytest-xdist",
   "pytest-cov",
   "responses",
-  "ruff",
-] }
-
-dynamic = ["version"]
+]
 
 [tool.setuptools_scm]
 write_to = "python/cog/_version.py"
@@ -64,16 +72,38 @@ reportUnneesssaryContains = "warning"
 reportMissingTypeArgument = "error"
 reportUnusedExpression = "warning"
 
+[tool.pyright.defineConstant]
+PYDANTIC_V2 = true
+
 [tool.setuptools]
-package-dir = { "" = "python" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["cog*"]
+exclude = ["tests*"]
+
+[tool.pylint.main]
+disable = [
+  "C0114", # Missing module docstring
+  "C0115", # Missing class docstring
+  "C0116", # Missing function or method docstring
+  "C0301", # Line too long
+  "C0413", # Import should be placed at the top of the module
+  "R0903", # Too few public methods
+  "W0622", # Redefining built-in
+]
+good-names = ["id", "input"]
+
+ignore-paths = ["python/cog/_version.py", "python/tests"]
 
 [tool.ruff]
+format.exclude = ["python/cog/_version.py"]
 lint.select = [
   "E",   # pycodestyle error
   "F",   # Pyflakes
   "I",   # isort
   "W",   # pycodestyle warning
-  "UP",  # pyupgrade
   "S",   # flake8-bandit
   "B",   # flake8-bugbear
   "ANN", # flake8-annotations
@@ -89,13 +119,12 @@ lint.ignore = [
   "ANN101", # Missing type annotation for self in method
   "ANN102", # Missing type annotation for cls in classmethod
   "ANN401", # Dynamically typed expressions are disallowed
-  # recently ruff added checks for pyupgrade, which is bad for back-compat
-  "UP037", # Remove quotes from type annotation
 ]
 extend-exclude = [
   "python/tests/server/fixtures/*",
   "test-integration/test_integration/fixtures/*",
 ]
+src = ["python"]
 
 [tool.ruff.lint.per-file-ignores]
 "python/cog/server/http.py" = [

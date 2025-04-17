@@ -5,121 +5,107 @@ PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 
 INSTALL := install -m 0755
-INSTALL_PROGRAM := $(INSTALL)
 
 GO ?= go
-GOOS := $(shell $(GO) env GOOS)
-GOARCH := $(shell $(GO) env GOARCH)
+GORELEASER := $(GO) run github.com/goreleaser/goreleaser/v2@v2.3.2
+GOIMPORTS := $(GO) run golang.org/x/tools/cmd/goimports@latest
+GOLINT := $(GO) run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
 
 PYTHON ?= python
-PYTEST := $(PYTHON) -m pytest
-PYRIGHT := $(PYTHON) -m pyright
-RUFF := $(PYTHON) -m ruff
+TOX := $(PYTHON) -Im tox
+
+COG_GO_SOURCE := $(shell find cmd pkg -type f)
+COG_PYTHON_SOURCE := $(shell find python/cog -type f -name '*.py')
+
+COG_BINARIES := cog base-image
 
 default: all
 
 .PHONY: all
 all: cog
 
-pkg/dockerfile/embed/cog.whl: python/* python/cog/* python/cog/server/* python/cog/command/*
-	@echo "Building Python library"
-	rm -rf dist
-	$(PYTHON) -m pip install build && $(PYTHON) -m build --wheel
-	mkdir -p pkg/dockerfile/embed
-	cp dist/*.whl $@
+.PHONY: wheel
+wheel: pkg/dockerfile/embed/.wheel
 
-.PHONY: cog
-cog: pkg/dockerfile/embed/cog.whl
-	$(eval COG_VERSION ?= $(shell git describe --tags --match 'v*' --abbrev=0)+dev)
-	CGO_ENABLED=0 $(GO) build -o $@ \
-		-ldflags "-X github.com/replicate/cog/pkg/global.Version=$(COG_VERSION) -X github.com/replicate/cog/pkg/global.BuildTime=$(shell date +%Y-%m-%dT%H:%M:%S%z) -w" \
-		cmd/cog/cog.go
+ifdef COG_WHEEL
+pkg/dockerfile/embed/.wheel: $(COG_WHEEL)
+	@mkdir -p pkg/dockerfile/embed
+	@rm -f pkg/dockerfile/embed/*.whl # there can only be one embedded wheel
+	@echo "Using prebuilt COG_WHEEL $<"
+	cp $< pkg/dockerfile/embed/
+	@touch $@
+else
+pkg/dockerfile/embed/.wheel: $(COG_PYTHON_SOURCE)
+	@mkdir -p pkg/dockerfile/embed
+	@rm -f pkg/dockerfile/embed/*.whl # there can only be one embedded wheel
+	$(PYTHON) -m pip wheel --no-deps --no-binary=:all: --wheel-dir=pkg/dockerfile/embed .
+	@touch $@
 
-.PHONY: base-image
-base-image: pkg/dockerfile/embed/cog.whl
-	$(eval COG_VERSION ?= $(shell git describe --tags --match 'v*' --abbrev=0)+dev)
-	CGO_ENABLED=0 $(GO) build -o $@ \
-		-ldflags "-X github.com/replicate/cog/pkg/global.Version=$(COG_VERSION) -X github.com/replicate/cog/pkg/global.BuildTime=$(shell date +%Y-%m-%dT%H:%M:%S%z) -w" \
-		cmd/base-image/baseimage.go
+define COG_WHEEL
+    $(shell find pkg/dockerfile/embed -type f -name '*.whl')
+endef
+
+endif
+
+$(COG_BINARIES): $(COG_GO_SOURCE) pkg/dockerfile/embed/.wheel
+	@echo Building $@
+	@if git name-rev --name-only --tags HEAD | grep -qFx undefined; then \
+		$(GORELEASER) build --clean --snapshot --single-target --id $@ --output $@; \
+	else \
+		$(GORELEASER) build --clean --auto-snapshot --single-target --id $@ --output $@; \
+	fi
 
 .PHONY: install
-install: cog
-	$(INSTALL_PROGRAM) -d $(DESTDIR)$(BINDIR)
-	$(INSTALL_PROGRAM) cog $(DESTDIR)$(BINDIR)/cog
-
-.PHONY: uninstall
-uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/cog
+install: $(COG_BINARIES)
+	$(INSTALL) -d $(DESTDIR)$(BINDIR)
+	$(INSTALL) $< $(DESTDIR)$(BINDIR)/$<
 
 .PHONY: clean
 clean:
-	$(GO) clean
-	rm -rf build dist
-	rm -f cog
-	rm -f pkg/dockerfile/embed/cog.whl
+	rm -rf build dist pkg/dockerfile/embed
+	rm -f $(COG_BINARIES)
 
 .PHONY: test-go
-test-go: pkg/dockerfile/embed/cog.whl | check-fmt vet lint-go
+test-go: pkg/dockerfile/embed/.wheel
 	$(GO) get gotest.tools/gotestsum
 	$(GO) run gotest.tools/gotestsum -- -timeout 1200s -parallel 5 ./... $(ARGS)
 
 .PHONY: test-integration
-test-integration: cog
-	cd test-integration/ && $(MAKE) PATH="$(PWD):$(PATH)" test
+test-integration: $(COG_BINARIES)
+	PATH="$(PWD):$(PATH)" $(TOX) -e integration
 
 # CircleCI docker executor will show the phsyical cores of the machine instead of the docker container.
 # This will cause the tests to fail because default timeout is too short.
 # Here we limit the number of parallel tests to 8 to avoid running too many processes at the same time.
 # https://discuss.circleci.com/t/x86-vm-cpu-ram-size-mismatch/45779
 .PHONY: test-python
-test-python:
-	$(PYTEST) -n auto --maxprocesses 8 -vv --cov=python/cog  --cov-report term-missing  python/tests $(if $(FILTER),-k "$(FILTER)",)
+test-python: pkg/dockerfile/embed/.wheel
+	$(TOX) run --installpkg $(COG_WHEEL) -f tests
 
 .PHONY: test
 test: test-go test-python test-integration
 
-
 .PHONY: fmt
 fmt:
-	$(GO) run golang.org/x/tools/cmd/goimports -w -d .
+	$(GO) run golang.org/x/tools/cmd/goimports@latest -w -d .
 
 .PHONY: generate
 generate:
 	$(GO) generate ./...
 
-
 .PHONY: vet
-vet:
+vet: pkg/dockerfile/embed/.wheel
 	$(GO) vet ./...
-
 
 .PHONY: check-fmt
 check-fmt:
-	$(GO) run golang.org/x/tools/cmd/goimports -d .
-	@test -z $$($(GO) run golang.org/x/tools/cmd/goimports -l .)
-
-.PHONY: lint-go
-lint-go:
-	$(GO) run github.com/golangci/golangci-lint/cmd/golangci-lint run ./...
-
-.PHONY: lint-python
-lint-python:
-	$(RUFF) check python/cog
-	$(RUFF) format --check python
-	@$(PYTHON) -c 'import sys; sys.exit("Warning: python >=3.10 is needed (not installed) to pass linting (pyright)") if sys.version_info < (3, 10) else None'
-	$(PYRIGHT)
+	$(GOIMPORTS) -d .
+	@test -z $$($(GOIMPORTS) -l .)
 
 .PHONY: lint
-lint: lint-go lint-python
-
-.PHONY: mod-tidy
-mod-tidy:
-	$(GO) mod tidy
-
-.PHONY: install-python # install dev dependencies
-install-python:
-	$(PYTHON) -m pip install '.[dev]'
-
+lint: pkg/dockerfile/embed/.wheel check-fmt vet
+	$(GOLINT) run ./...
+	$(TOX) run --installpkg $(COG_WHEEL) -e lint,typecheck-pydantic2
 
 .PHONY: run-docs-server
 run-docs-server:

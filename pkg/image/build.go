@@ -2,13 +2,18 @@ package image
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
+	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/replicate/cog/pkg/config"
 	"github.com/replicate/cog/pkg/docker"
@@ -23,15 +28,19 @@ const weightsManifestPath = ".cog/cache/weights_manifest.json"
 const bundledSchemaFile = ".cog/openapi_schema.json"
 const bundledSchemaPy = ".cog/schema.py"
 
+var errGit = errors.New("git error")
+
 // Build a Cog model from a config
 //
 // This is separated out from docker.Build(), so that can be as close as possible to the behavior of 'docker build'.
-func Build(cfg *config.Config, dir, imageName string, secrets []string, noCache, separateWeights bool, useCudaBaseImage string, progressOutput string, schemaFile string, dockerfileFile string, useCogBaseImage bool) error {
+func Build(cfg *config.Config, dir, imageName string, secrets []string, noCache, separateWeights bool, useCudaBaseImage string, progressOutput string, schemaFile string, dockerfileFile string, useCogBaseImage *bool, strip bool, precompile bool) error {
 	console.Infof("Building Docker image from environment in cog.yaml as %s...", imageName)
 
 	// remove bundled schema files that may be left from previous builds
 	_ = os.Remove(bundledSchemaFile)
 	_ = os.Remove(bundledSchemaPy)
+
+	var cogBaseImageName string
 
 	if dockerfileFile != "" {
 		dockerfileContents, err := os.ReadFile(dockerfileFile)
@@ -51,8 +60,19 @@ func Build(cfg *config.Config, dir, imageName string, secrets []string, noCache,
 				console.Warnf("Error cleaning up Dockerfile generator: %s", err)
 			}
 		}()
+		generator.SetStrip(strip)
+		generator.SetPrecompile(precompile)
 		generator.SetUseCudaBaseImage(useCudaBaseImage)
-		generator.SetUseCogBaseImage(useCogBaseImage)
+		if useCogBaseImage != nil {
+			generator.SetUseCogBaseImage(*useCogBaseImage)
+		}
+
+		if generator.IsUsingCogBaseImage() {
+			cogBaseImageName, err = generator.BaseImage()
+			if err != nil {
+				return fmt.Errorf("Failed to get cog base image name: %s", err)
+			}
+		}
 
 		if separateWeights {
 			weightsDockerfile, runnerDockerfile, dockerignore, err := generator.GenerateModelBaseWithSeparateWeights(imageName)
@@ -156,27 +176,60 @@ func Build(cfg *config.Config, dir, imageName string, secrets []string, noCache,
 		global.LabelNamespace + "has_init": "true",
 	}
 
-	if isGitRepo(dir) {
-		if commit, err := gitHead(dir); commit != "" && err == nil {
-			labels["org.opencontainers.image.revision"] = commit
-		} else {
-			console.Info("Unable to determine Git commit")
+	if cogBaseImageName != "" {
+		labels[global.LabelNamespace+"cog-base-image-name"] = cogBaseImageName
+
+		ref, err := name.ParseReference(cogBaseImageName)
+		if err != nil {
+			return fmt.Errorf("Failed to parse cog base image reference: %w", err)
 		}
 
-		if tag, err := gitTag(dir); tag != "" && err == nil {
-			labels["org.opencontainers.image.version"] = tag
-		} else {
-			console.Info("Unable to determine Git tag")
+		img, err := remote.Image(ref)
+		if err != nil {
+			return fmt.Errorf("Failed to fetch cog base image: %w", err)
 		}
+
+		layers, err := img.Layers()
+		if err != nil {
+			return fmt.Errorf("Failed to get layers for cog base image: %w", err)
+		}
+
+		if len(layers) == 0 {
+			return fmt.Errorf("Cog base image has no layers: %s", cogBaseImageName)
+		}
+
+		lastLayerIndex := len(layers) - 1
+		layerLayerDigest, err := layers[lastLayerIndex].DiffID()
+		if err != nil {
+			return fmt.Errorf("Failed to get last layer digest for cog base image: %w", err)
+		}
+
+		lastLayer := layerLayerDigest.String()
+		console.Debugf("Last layer of the cog base image: %s", lastLayer)
+
+		labels[global.LabelNamespace+"cog-base-image-last-layer-sha"] = lastLayer
+		labels[global.LabelNamespace+"cog-base-image-last-layer-idx"] = fmt.Sprintf("%d", lastLayerIndex)
 	}
 
-	if err := docker.BuildAddLabelsAndSchemaToImage(dir, imageName, labels, bundledSchemaFile, bundledSchemaPy); err != nil {
+	if commit, err := gitHead(dir); commit != "" && err == nil {
+		labels["org.opencontainers.image.revision"] = commit
+	} else {
+		console.Info("Unable to determine Git commit")
+	}
+
+	if tag, err := gitTag(dir); tag != "" && err == nil {
+		labels["org.opencontainers.image.version"] = tag
+	} else {
+		console.Info("Unable to determine Git tag")
+	}
+
+	if err := docker.BuildAddLabelsAndSchemaToImage(imageName, labels, bundledSchemaFile, bundledSchemaPy); err != nil {
 		return fmt.Errorf("Failed to add labels to image: %w", err)
 	}
 	return nil
 }
 
-func BuildBase(cfg *config.Config, dir string, useCudaBaseImage string, useCogBaseImage bool, progressOutput string) (string, error) {
+func BuildBase(cfg *config.Config, dir string, useCudaBaseImage string, useCogBaseImage *bool, progressOutput string) (string, error) {
 	// TODO: better image management so we don't eat up disk space
 	// https://github.com/replicate/cog/issues/80
 	imageName := config.BaseDockerImageName(dir)
@@ -193,7 +246,9 @@ func BuildBase(cfg *config.Config, dir string, useCudaBaseImage string, useCogBa
 	}()
 
 	generator.SetUseCudaBaseImage(useCudaBaseImage)
-	generator.SetUseCogBaseImage(useCogBaseImage)
+	if useCogBaseImage != nil {
+		generator.SetUseCogBaseImage(*useCogBaseImage)
+	}
 
 	dockerfileContents, err := generator.GenerateModelBase()
 	if err != nil {
@@ -205,38 +260,56 @@ func BuildBase(cfg *config.Config, dir string, useCudaBaseImage string, useCogBa
 	return imageName, nil
 }
 
-func isGitRepo(dir string) bool {
-	if _, err := os.Stat(path.Join(dir, ".git")); os.IsNotExist(err) {
+func isGitWorkTree(dir string) bool {
+	ctx, cancel := context.WithTimeout(context.TODO(), 3*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output()
+	if err != nil {
 		return false
 	}
 
-	return true
+	return strings.TrimSpace(string(out)) == "true"
 }
 
 func gitHead(dir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
+	if v, ok := os.LookupEnv("GITHUB_SHA"); ok && v != "" {
+		return v, nil
 	}
 
-	commit := string(bytes.TrimSpace(out))
+	if isGitWorkTree(dir) {
+		ctx, cancel := context.WithTimeout(context.TODO(), 3*time.Second)
+		defer cancel()
 
-	return commit, nil
+		out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD").Output()
+		if err != nil {
+			return "", err
+		}
+
+		return string(bytes.TrimSpace(out)), nil
+	}
+
+	return "", fmt.Errorf("Failed to find HEAD commit: %w", errGit)
 }
 
 func gitTag(dir string) (string, error) {
-	cmd := exec.Command("git", "describe", "--tags", "--dirty")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
+	if v, ok := os.LookupEnv("GITHUB_REF_NAME"); ok && v != "" {
+		return v, nil
 	}
 
-	tag := string(bytes.TrimSpace(out))
+	if isGitWorkTree(dir) {
+		ctx, cancel := context.WithTimeout(context.TODO(), 3*time.Second)
+		defer cancel()
 
-	return tag, nil
+		out, err := exec.CommandContext(ctx, "git", "-C", dir, "describe", "--tags", "--dirty").Output()
+		if err != nil {
+			return "", err
+		}
+
+		return string(bytes.TrimSpace(out)), nil
+	}
+
+	return "", fmt.Errorf("Failed to find ref name: %w", errGit)
 }
 
 func buildWeightsImage(dir, dockerfileContents, imageName string, secrets []string, noCache bool, progressOutput string) error {

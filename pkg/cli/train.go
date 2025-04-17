@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,16 +17,21 @@ import (
 )
 
 var (
+	trainEnvFlags   []string
 	trainInputFlags []string
+	trainOutPath    string
 )
 
 func newTrainCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "train",
+		Use:   "train [image]",
 		Short: "Run a training",
 		Long: `Run a training.
 
-It will build the model in the current directory and train it.`,
+If 'image' is passed, it will run the training on that Docker image.
+It must be an image that has been built by Cog.
+
+Otherwise, it will build the model in the current directory and train it.`,
 		RunE:   cmdTrain,
 		Args:   cobra.MaximumNArgs(1),
 		Hidden: true,
@@ -33,10 +40,12 @@ It will build the model in the current directory and train it.`,
 	addBuildProgressOutputFlag(cmd)
 	addDockerfileFlag(cmd)
 	addUseCudaBaseImageFlag(cmd)
+	addGpusFlag(cmd)
 	addUseCogBaseImageFlag(cmd)
 
 	cmd.Flags().StringArrayVarP(&trainInputFlags, "input", "i", []string{}, "Inputs, in the form name=value. if value is prefixed with @, then it is read from a file on disk. E.g. -i path=@image.jpg")
-	cmd.Flags().StringArrayVarP(&envFlags, "env", "e", []string{}, "Environment variables, in the form name=value")
+	cmd.Flags().StringArrayVarP(&trainEnvFlags, "env", "e", []string{}, "Environment variables, in the form name=value")
+	cmd.Flags().StringVarP(&trainOutPath, "output", "o", "weights", "Output path")
 
 	return cmd
 }
@@ -44,28 +53,50 @@ It will build the model in the current directory and train it.`,
 func cmdTrain(cmd *cobra.Command, args []string) error {
 	imageName := ""
 	volumes := []docker.Volume{}
-	gpus := ""
-	weightsPath := "weights"
+	gpus := gpusFlag
 
-	// Build image
+	if len(args) == 0 {
+		// Build image
 
-	cfg, projectDir, err := config.GetConfig(projectDirFlag)
-	if err != nil {
-		return err
-	}
+		cfg, projectDir, err := config.GetConfig(projectDirFlag)
+		if err != nil {
+			return err
+		}
 
-	if imageName, err = image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, buildUseCogBaseImage, buildProgressOutput); err != nil {
-		return err
-	}
+		if imageName, err = image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, DetermineUseCogBaseImage(cmd), buildProgressOutput); err != nil {
+			return err
+		}
 
-	// Base image doesn't have /src in it, so mount as volume
-	volumes = append(volumes, docker.Volume{
-		Source:      projectDir,
-		Destination: "/src",
-	})
+		// Base image doesn't have /src in it, so mount as volume
+		volumes = append(volumes, docker.Volume{
+			Source:      projectDir,
+			Destination: "/src",
+		})
 
-	if cfg.Build.GPU {
-		gpus = "all"
+		if gpus == "" && cfg.Build.GPU {
+			gpus = "all"
+		}
+	} else {
+		// Use existing image
+		imageName = args[0]
+
+		exists, err := docker.ImageExists(imageName)
+		if err != nil {
+			return fmt.Errorf("Failed to determine if %s exists: %w", imageName, err)
+		}
+		if !exists {
+			console.Infof("Pulling image: %s", imageName)
+			if err := docker.Pull(imageName); err != nil {
+				return fmt.Errorf("Failed to pull %s: %w", imageName, err)
+			}
+		}
+		conf, err := image.GetConfig(imageName)
+		if err != nil {
+			return err
+		}
+		if gpus == "" && conf.Build.GPU {
+			gpus = "all"
+		}
 	}
 
 	console.Info("")
@@ -75,9 +106,9 @@ func cmdTrain(cmd *cobra.Command, args []string) error {
 		GPUs:    gpus,
 		Image:   imageName,
 		Volumes: volumes,
-		Env:     envFlags,
+		Env:     trainEnvFlags,
 		Args:    []string{"python", "-m", "cog.server.http", "--x-mode", "train"},
-	})
+	}, true)
 
 	go func() {
 		captureSignal := make(chan os.Signal, 1)
@@ -91,7 +122,7 @@ func cmdTrain(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	if err := predictor.Start(os.Stderr); err != nil {
+	if err := predictor.Start(os.Stderr, time.Duration(setupTimeout)*time.Second); err != nil {
 		return err
 	}
 
@@ -103,5 +134,5 @@ func cmdTrain(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	return predictIndividualInputs(predictor, trainInputFlags, weightsPath)
+	return predictIndividualInputs(predictor, trainInputFlags, trainOutPath, true)
 }

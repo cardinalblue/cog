@@ -1,5 +1,7 @@
 import pytest
 
+from cog.types import PYDANTIC_V2
+
 from .conftest import uses_predictor
 
 # Not allow empty request body
@@ -104,13 +106,6 @@ from .conftest import uses_predictor
 #         }
 #     )
 #     assert res.status_code == 200
-
-
-@uses_predictor("output_numpy")
-def test_json_output_numpy(client, match):
-    resp = client.post("/predictions", json={"instances": [{}]})
-    assert resp.status_code == 200
-    assert resp.json() == match({"predictions": [1.0]})
 
 
 # Not supported yet
@@ -234,3 +229,12 @@ def test_cb_output_error(client, match):
             ]
         }
     )
+
+
+if not PYDANTIC_V2:
+
+    @uses_predictor("output_numpy")
+    def test_json_output_numpy(client, match):
+        resp = client.post("/predictions", json={"instances": [{}]})
+        assert resp.status_code == 200
+        assert resp.json() == match({"predictions": [1.0]})

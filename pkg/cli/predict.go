@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mitchellh/go-homedir"
 	"github.com/spf13/cobra"
 	"github.com/vincent-petithory/dataurl"
+	"golang.org/x/sys/unix"
 
 	"github.com/replicate/cog/pkg/config"
 	"github.com/replicate/cog/pkg/docker"
@@ -24,9 +27,10 @@ import (
 )
 
 var (
-	envFlags   []string
-	inputFlags []string
-	outPath    string
+	envFlags     []string
+	inputFlags   []string
+	outPath      string
+	setupTimeout uint32
 )
 
 func newPredictCommand() *cobra.Command {
@@ -50,6 +54,7 @@ the prediction on that.`,
 	addBuildProgressOutputFlag(cmd)
 	addDockerfileFlag(cmd)
 	addGpusFlag(cmd)
+	addSetupTimeoutFlag(cmd)
 
 	cmd.Flags().StringArrayVarP(&inputFlags, "input", "i", []string{}, "Inputs, in the form name=value. if value is prefixed with @, then it is read from a file on disk. E.g. -i path=@image.jpg")
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "Output path")
@@ -71,7 +76,7 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		if imageName, err = image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, buildUseCogBaseImage, buildProgressOutput); err != nil {
+		if imageName, err = image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, DetermineUseCogBaseImage(cmd), buildProgressOutput); err != nil {
 			return err
 		}
 
@@ -121,7 +126,7 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 		Image:   imageName,
 		Volumes: volumes,
 		Env:     envFlags,
-	})
+	}, false)
 
 	go func() {
 		captureSignal := make(chan os.Signal, 1)
@@ -135,7 +140,8 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	if err := predictor.Start(os.Stderr); err != nil {
+	timeout := time.Duration(setupTimeout) * time.Second
+	if err := predictor.Start(os.Stderr, timeout); err != nil {
 		// Only retry if we're using a GPU but but the user didn't explicitly select a GPU with --gpus
 		// If the user specified the wrong GPU, they are explicitly selecting a GPU and they'll want to hear about it
 		if gpus == "all" && errors.Is(err, docker.ErrMissingDeviceDriver) {
@@ -146,9 +152,9 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 				Image:   imageName,
 				Volumes: volumes,
 				Env:     envFlags,
-			})
+			}, false)
 
-			if err := predictor.Start(os.Stderr); err != nil {
+			if err := predictor.Start(os.Stderr, timeout); err != nil {
 				return err
 			}
 		} else {
@@ -164,10 +170,14 @@ func cmdPredict(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	return predictIndividualInputs(predictor, inputFlags, outPath)
+	return predictIndividualInputs(predictor, inputFlags, outPath, false)
 }
 
-func predictIndividualInputs(predictor predict.Predictor, inputFlags []string, outputPath string) error {
+func isURI(ref *openapi3.Schema) bool {
+	return ref != nil && ref.Type.Is("string") && ref.Format == "uri"
+}
+
+func predictIndividualInputs(predictor predict.Predictor, inputFlags []string, outputPath string, isTrain bool) error {
 	console.Info("Running prediction...")
 	schema, err := predictor.GetSchema()
 	if err != nil {
@@ -179,39 +189,90 @@ func predictIndividualInputs(predictor predict.Predictor, inputFlags []string, o
 		return err
 	}
 
-	prediction, err := predictor.Predict(inputs)
-	if err != nil {
-		return err
+	// If outputPath != "", then we now know the output path for sure
+	if outputPath != "" {
+		// Ignore @, to make it behave the same as -i
+		outputPath = strings.TrimPrefix(outputPath, "@")
+
+		if err := checkOutputWritable(outputPath); err != nil {
+			return fmt.Errorf("Output path is not writable: %w", err)
+		}
 	}
 
 	// Generate output depending on type in schema
-	var out []byte
-	responseSchema := schema.Paths.Value("/predictions").Post.Responses.Value("200").Value.Content["application/json"].Schema.Value
+	url := "/predictions"
+	if isTrain {
+		url = "/trainings"
+	}
+	responseSchema := schema.Paths.Value(url).Post.Responses.Value("200").Value.Content["application/json"].Schema.Value
 	outputSchema := responseSchema.Properties["output"].Value
 
-	// Multiple outputs!
-	if outputSchema.Type == "array" && outputSchema.Items.Value != nil && outputSchema.Items.Value.Type == "string" && outputSchema.Items.Value.Format == "uri" {
-		return handleMultipleFileOutput(prediction, outputSchema)
+	prediction, err := predictor.Predict(inputs)
+	if err != nil {
+		return fmt.Errorf("Failed to predict: %w", err)
 	}
 
-	if outputSchema.Type == "string" && outputSchema.Format == "uri" {
-		dataurlObj, err := dataurl.DecodeString((*prediction.Output).(string))
-		if err != nil {
-			return fmt.Errorf("Failed to decode dataurl: %w", err)
-		}
-		out = dataurlObj.Data
+	if prediction.Output == nil {
+		console.Warn("No output generated")
+		return nil
+	}
+
+	switch {
+	case isURI(outputSchema):
+		addExtension := false
 		if outputPath == "" {
 			outputPath = "output"
-			extension := mime.ExtensionByType(dataurlObj.ContentType())
-			if extension != "" {
-				outputPath += extension
+			addExtension = true
+		}
+
+		outputStr, ok := (*prediction.Output).(string)
+		if !ok {
+			return fmt.Errorf("Failed to convert prediction output to string")
+		}
+
+		if err := writeDataURLOutput(outputStr, outputPath, addExtension); err != nil {
+			return fmt.Errorf("Failed to write output: %w", err)
+		}
+
+		return nil
+	case outputSchema.Type.Is("array") && isURI(outputSchema.Items.Value):
+		outputs, ok := (*prediction.Output).([]interface{})
+		if !ok {
+			return fmt.Errorf("Failed to decode output")
+		}
+
+		for i, output := range outputs {
+			outputPath := fmt.Sprintf("output.%d", i)
+			addExtension := true
+
+			outputStr, ok := output.(string)
+			if !ok {
+				return fmt.Errorf("Failed to convert prediction output to string")
+			}
+
+			if err := writeDataURLOutput(outputStr, outputPath, addExtension); err != nil {
+				return fmt.Errorf("Failed to write output %d: %w", i, err)
 			}
 		}
-	} else if outputSchema.Type == "string" {
-		// Handle strings separately because if we encode it to JSON it will be surrounded by quotes.
-		s := (*prediction.Output).(string)
-		out = []byte(s)
-	} else {
+
+		return nil
+	case outputSchema.Type.Is("string"):
+		s, ok := (*prediction.Output).(string)
+		if !ok {
+			return fmt.Errorf("Failed to convert prediction output to string")
+		}
+
+		if outputPath == "" {
+			console.Output(s)
+		} else {
+			err := writeOutput(outputPath, []byte(s))
+			if err != nil {
+				return fmt.Errorf("Failed to write output: %w", err)
+			}
+		}
+
+		return nil
+	default:
 		// Treat everything else as JSON -- ints, floats, bools will all convert correctly.
 		rawJSON, err := json.Marshal(prediction.Output)
 		if err != nil {
@@ -221,27 +282,39 @@ func predictIndividualInputs(predictor predict.Predictor, inputFlags []string, o
 		if err := json.Indent(&indentedJSON, rawJSON, "", "  "); err != nil {
 			return err
 		}
-		out = indentedJSON.Bytes()
 
-		// FIXME: this stopped working
-		// f := colorjson.NewFormatter()
-		// f.Indent = 2
-		// s, _ := f.Marshal(obj)
+		if outputPath == "" {
+			console.Output(indentedJSON.String())
+		} else {
+			err := writeOutput(outputPath, indentedJSON.Bytes())
+			if err != nil {
+				return fmt.Errorf("Failed to write output: %w", err)
+			}
+		}
 
-	}
-
-	// Write to stdout
-	if outputPath == "" {
-		console.Output(string(out))
 		return nil
 	}
+}
 
-	// Fall back to writing file
+func checkOutputWritable(outputPath string) error {
+	outputPath, err := homedir.Expand(outputPath)
+	if err != nil {
+		return err
+	}
 
-	// Ignore @, to make it behave the same as -i
-	outputPath = strings.TrimPrefix(outputPath, "@")
+	// Check if the file exists
+	_, err = os.Stat(outputPath)
+	if err == nil {
+		// File exists, check if it's writable
+		return unix.Access(outputPath, unix.W_OK)
+	} else if os.IsNotExist(err) {
+		// File doesn't exist, check if the directory is writable
+		dir := filepath.Dir(outputPath)
+		return unix.Access(dir, unix.W_OK)
+	}
 
-	return writeOutput(outputPath, out)
+	// Some other error occurred
+	return err
 }
 
 func writeOutput(outputPath string, output []byte) error {
@@ -251,7 +324,7 @@ func writeOutput(outputPath string, output []byte) error {
 	}
 
 	// Write to file
-	outFile, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE, 0o755)
+	outFile, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err
 	}
@@ -266,24 +339,22 @@ func writeOutput(outputPath string, output []byte) error {
 	return nil
 }
 
-func handleMultipleFileOutput(prediction *predict.Response, outputSchema *openapi3.Schema) error {
-	outputs, ok := (*prediction.Output).([]interface{})
-	if !ok {
-		return fmt.Errorf("Failed to decode output")
+func writeDataURLOutput(outputString string, outputPath string, addExtension bool) error {
+	dataurlObj, err := dataurl.DecodeString(outputString)
+	if err != nil {
+		return fmt.Errorf("Failed to decode dataurl: %w", err)
+	}
+	output := dataurlObj.Data
+
+	if addExtension {
+		extension := mime.ExtensionByType(dataurlObj.ContentType())
+		if extension != "" {
+			outputPath += extension
+		}
 	}
 
-	for i, output := range outputs {
-		outputString := output.(string)
-		dataurlObj, err := dataurl.DecodeString(outputString)
-		if err != nil {
-			return fmt.Errorf("Failed to decode dataurl: %w", err)
-		}
-		out := dataurlObj.Data
-		extension := mime.ExtensionByType(dataurlObj.ContentType())
-		outputPath := fmt.Sprintf("output.%d%s", i, extension)
-		if err := writeOutput(outputPath, out); err != nil {
-			return err
-		}
+	if err := writeOutput(outputPath, output); err != nil {
+		return err
 	}
 
 	return nil
@@ -312,4 +383,8 @@ func parseInputFlags(inputs []string) (predict.Inputs, error) {
 	}
 
 	return predict.NewInputs(keyVals), nil
+}
+
+func addSetupTimeoutFlag(cmd *cobra.Command) {
+	cmd.Flags().Uint32Var(&setupTimeout, "setup-timeout", 5*60, "The timeout for a container to setup (in seconds).")
 }

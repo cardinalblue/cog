@@ -324,28 +324,30 @@ if typing.TYPE_CHECKING:
 def to_serializable(val: "AstVal") -> "JSONObject":
     if isinstance(val, bytes):
         return val.decode("utf-8")
-    elif isinstance(val, list):
+    if isinstance(val, list):
         return [to_serializable(x) for x in val]
-    elif isinstance(val, complex):
+    if isinstance(val, complex):
         msg = "complex inputs are not supported"
         raise ValueError(msg)
-    else:
-        return val
+    return val
 
 
 def get_value(node: ast.AST) -> "AstVal":
     """Return the value of constant or list of constants"""
     if isinstance(node, ast.Constant):
         return node.value
-    # for python3.7, were deprecated for Constant
-    if isinstance(node, (ast.Str, ast.Bytes)):
-        return node.s
-    if isinstance(node, ast.Num):
-        return node.n
+    # DeprecationWarning: ast.Str | ast.Num is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    if sys.version_info < (3, 8):
+        if isinstance(node, (ast.Str, ast.Bytes)):
+            return node.s
+        if isinstance(node, ast.Num):
+            return node.n
     if isinstance(node, (ast.List, ast.Tuple)):
         return [get_value(e) for e in node.elts]
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return -typing.cast(typing.Union[int, float, complex], get_value(node.operand))
+    if isinstance(node, ast.Index):
+        return node.value  # type: ignore
     raise ValueError("Unexpected node type", type(node))
 
 
@@ -355,8 +357,22 @@ def get_annotation(node: "ast.AST | None") -> str:
         return node.id
     if isinstance(node, ast.Constant):
         return node.value  # e.g. arg: "Path"
-    # ignore Subscript (Optional[str]), BinOp (str | int), and stuff like that
-    # except we may need to care about list/List[str]
+    if isinstance(node, ast.Subscript):
+        value = get_annotation(node.value)
+        if value == "Literal":
+            if sys.version_info < (3, 9):
+                if isinstance(node.slice, ast.Index):
+                    elts = [node.slice.value]
+                else:
+                    elts = node.slice.elts
+            else:
+                elts = (
+                    node.slice.elts
+                    if isinstance(node.slice, ast.Tuple)
+                    else [node.slice]
+                )
+            return f"Literal[{','.join(repr(get_value(e)) for e in elts)}]"
+        # ignore other Subscript (Optional[str]), BinOp (str | int), and stuff like that
     raise ValueError("Unexpected annotation type", type(node))
 
 
@@ -472,8 +488,8 @@ For example:
     name = resolve_name(annotation)
     if isinstance(annotation, ast.Subscript):
         # forget about other subscripts like Optional, and assume otherlib.File will still be an uri
-        slice = resolve_name(annotation.slice)
-        format = {"format": "uri"} if slice in ("Path", "File") else {}
+        slice = resolve_name(annotation.slice)  # pylint: disable=redefined-builtin
+        format = {"format": "uri"} if slice in ("Path", "File") else {}  # pylint: disable=redefined-builtin
         array_type = {"x-cog-array-type": "iterator"} if "Iterator" in name else {}
         display_type = (
             {"x-cog-array-display": "concatenate"} if "Concatenate" in name else {}
@@ -503,7 +519,7 @@ For example:
 KEPT_ATTRS = ("description", "default", "ge", "le", "max_length", "min_length", "regex")
 
 
-def extract_info(code: str) -> "JSONDict":
+def extract_info(code: str) -> "JSONDict":  # pylint: disable=too-many-branches,too-many-locals
     """Parse the schemas from a file with a predict function"""
     tree = ast.parse(code)
     properties: JSONDict = {}
@@ -520,7 +536,10 @@ def extract_info(code: str) -> "JSONDict":
                     msg = "unknown argument for Input"
                     raise ValueError(msg)
                 kws[kw.arg] = to_serializable(get_value(kw.value))
-        elif isinstance(default, (ast.Constant, ast.List, ast.Tuple, ast.Str, ast.Num)):
+        elif isinstance(default, (ast.Constant, ast.List, ast.Tuple)) or (
+            # DeprecationWarning: ast.Str | ast.Num is deprecated and will be removed in Python 3.14; use ast.Constant instead
+            sys.version_info < (3, 8) and isinstance(default, (ast.Str, ast.Num))
+        ):
             kws = {"default": to_serializable(get_value(default))}  # could be None
         elif default == ...:  # no default
             kws = {}
@@ -528,9 +547,20 @@ def extract_info(code: str) -> "JSONDict":
             raise ValueError("Unexpected default value", default)
         input: JSONDict = {"x-order": len(properties)}
         # need to handle other types?
-        arg_type = OPENAPI_TYPES.get(get_annotation(arg.annotation), "string")
-        if get_annotation(arg.annotation) in ("Path", "File"):
+
+        annotation = get_annotation(arg.annotation)
+        arg_type = OPENAPI_TYPES.get(annotation, "string")
+        if annotation in ("Path", "File"):
             input["format"] = "uri"
+        elif annotation.startswith("Literal["):
+            input["enum"] = list(
+                ast.literal_eval(annotation[7:])  # Safely eval the literal values
+            )
+            arg_type = (
+                OPENAPI_TYPES.get(type(input["enum"][0]).__name__, "string")
+                if input["enum"]
+                else "string"
+            )
         for attr in KEPT_ATTRS:
             if attr in kws:
                 input[attr] = kws[attr]
@@ -545,6 +575,10 @@ def extract_info(code: str) -> "JSONDict":
                 "type": arg_type,
                 "description": "An enumeration.",
             }
+        elif "enum" in input:
+            input["title"] = arg.arg.replace("_", " ").title()
+            input["type"] = arg_type
+            input["description"] = "An enumeration."
         else:
             input["title"] = arg.arg.replace("_", " ").title()
             input["type"] = arg_type

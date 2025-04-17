@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from .util import assert_versions_match
+
 
 def test_build_without_predictor(docker_image):
     project_dir = Path(__file__).parent / "fixtures/no-predictor-project"
@@ -15,7 +17,7 @@ def test_build_without_predictor(docker_image):
     )
     assert build_process.returncode > 0
     assert (
-        "Can't run predictions: 'predict' option not found"
+        "Can\\'t run predictions: \\'predict\\' option not found"
         in build_process.stderr.decode()
     )
 
@@ -219,4 +221,144 @@ def test_python_37_deprecated(docker_image):
     assert (
         "minimum supported Python version is 3.8. requested 3.7"
         in build_process.stderr.decode()
+    )
+
+
+def test_build_base_image_sha(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/path-project"
+    subprocess.run(
+        ["cog", "build", "-t", docker_image, "--use-cog-base-image"],
+        cwd=project_dir,
+        check=True,
+    )
+    image = json.loads(
+        subprocess.run(
+            ["docker", "image", "inspect", docker_image],
+            capture_output=True,
+            check=True,
+        ).stdout
+    )
+    labels = image[0]["Config"]["Labels"]
+    base_layer_hash = labels["run.cog.cog-base-image-last-layer-sha"]
+    layers = image[0]["RootFS"]["Layers"]
+    assert base_layer_hash in layers
+
+
+def test_torch_2_0_3_cu118_base_image(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/torch-cuda-baseimage-project"
+    build_process = subprocess.run(
+        ["cog", "build", "-t", docker_image, "--use-cog-base-image"],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert build_process.returncode == 0
+
+
+def test_torch_1_13_0_base_image_fallback(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/torch-baseimage-project"
+    build_process = subprocess.run(
+        ["cog", "build", "-t", docker_image, "--openapi-schema", "openapi.json"],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert build_process.returncode == 0
+
+
+def test_torch_1_13_0_base_image_fail(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/torch-baseimage-project"
+    build_process = subprocess.run(
+        [
+            "cog",
+            "build",
+            "-t",
+            docker_image,
+            "--openapi-schema",
+            "openapi.json",
+            "--use-cog-base-image",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert build_process.returncode == 1
+
+
+def test_torch_1_13_0_base_image_fail_explicit(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/torch-baseimage-project"
+    build_process = subprocess.run(
+        [
+            "cog",
+            "build",
+            "-t",
+            docker_image,
+            "--openapi-schema",
+            "openapi.json",
+            "--use-cog-base-image=false",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert build_process.returncode == 0
+
+
+def test_precompile(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/torch-baseimage-project"
+    build_process = subprocess.run(
+        [
+            "cog",
+            "build",
+            "-t",
+            docker_image,
+            "--openapi-schema",
+            "openapi.json",
+            "--use-cog-base-image=false",
+            "--precompile",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert build_process.returncode == 0
+
+
+def test_cog_install_base_image(docker_image):
+    project_dir = Path(__file__).parent / "fixtures/string-project"
+    build_process = subprocess.run(
+        [
+            "cog",
+            "build",
+            "-t",
+            docker_image,
+            "--use-cog-base-image=true",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert build_process.returncode == 0
+    cog_installed_version_process = subprocess.run(
+        [
+            "docker",
+            "run",
+            "-t",
+            docker_image,
+            "python",
+            "-c",
+            "import cog; print(cog.__version__)",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    assert cog_installed_version_process.returncode == 0
+    cog_installed_version = cog_installed_version_process.stdout.decode().strip()
+    cog_version_process = subprocess.run(
+        [
+            "cog",
+            "--version",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    cog_version = cog_version_process.stdout.decode().strip().split()[2]
+
+    assert_versions_match(
+        semver_version=cog_version,
+        pep440_version=cog_installed_version,
     )

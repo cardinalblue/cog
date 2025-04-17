@@ -5,20 +5,33 @@ jobs:
     parameters:
       python-version:
         type: string
-        default: "3.8"
+        default: "3.9"
+      pydantic:
+        type: string
+        default: "1"
     docker:
       - image: cimg/python:<< parameters.python-version >>
     resource_class: xlarge # 8 core machines to get the hypothesis tests to run in a reasonable time
     steps:
       - checkout
       - run:
+          name: Install uv
+          command: |
+            pip install uv
+      - run:
           name: Install Python dependencies
           command: |
-            python -m pip install '.[dev]'
-            yes | python -m mypy --install-types replicate || true
+            uv sync --all-extras
       - run:
-          name: Run tests
-          command: make test-python
+          name: Build and run tests
+          command: |
+            uv build
+            ls -la "$PWD/"dist/*.whl
+            export WHEEL_PATH=$(ls "$PWD/"dist/*.whl)
+            echo "WHEEL_PATH: $WHEEL_PATH"
+            export TOX_PYTHON=py$(echo "<< parameters.python-version >>" | tr -d .)
+            echo "TOX_PYTHON: $TOX_PYTHON"
+            uv run python -Im tox run --installpkg "$WHEEL_PATH" -e ${TOX_PYTHON}-pydantic<< parameters.pydantic >>-tests
           environment:
             HYPOTHESIS_PROFILE: ci
 
@@ -27,17 +40,23 @@ workflows:
     jobs:
       # Run the job with the default Python version first
       - test-python:
-          name: test-python-v3.8
-          filters:
-            branches:
-              ignore: "main"
-      - test-python:
-          name: test-python-v<< matrix.python-version >>
+          name: "test-python-v<< matrix.python-version >>-pydantic-v<< matrix.pydantic >>"
           filters:
             branches:
               ignore: "main"
           matrix:
             parameters:
-              python-version: ["3.9", "3.10", "3.11", "3.12"] # 3.8 has already been tested
+              python-version: ["3.9"]
+              pydantic: ["1", "2"]
+      - test-python:
+          name: "test-python-v<< matrix.python-version >>-pydantic-v<< matrix.pydantic >>"
+          filters:
+            branches:
+              ignore: "main"
+          matrix:
+            parameters:
+              python-version: ["3.10", "3.11", "3.12", "3.13"] # 3.9 has already been tested
+              pydantic: ["1", "2"]
           requires:
-            - test-python-v3.8
+            - test-python-v3.9-pydantic-v1
+            - test-python-v3.9-pydantic-v2

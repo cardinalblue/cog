@@ -1,5 +1,7 @@
-from cog import BasePredictor
 import threading
+from typing import Iterator
+
+from cog import BasePredictor
 
 
 def keep_printing():
@@ -8,10 +10,10 @@ def keep_printing():
 
 
 class Predictor(BasePredictor):
-    def setup(self):
-        self.print_thread = threading.Thread(target=keep_printing)
-
-    def predict(self) -> str:
-        self.print_thread.start()
-        output = "output" * 100000  # bigger output increases the chance of race condition
-        return output
+    def predict(self) -> Iterator[str]:
+        print_thread = threading.Thread(target=keep_printing)
+        print_thread.start()
+        yield "output" * 10000
+        yield "output" * 10000
+        yield "output" * 10000
+        print_thread.join()
