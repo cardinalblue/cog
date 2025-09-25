@@ -244,6 +244,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         setup = app.state.setup_result.to_dict() if app.state.setup_result else {}
         return jsonable_encoder({"status": health.name, "setup": setup})
 
+    @app.get("/ping")
     @app.get("/health/ready")
     def healthcheck_readiness() -> Any:
         health = app.state.health
