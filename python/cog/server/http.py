@@ -9,9 +9,19 @@ import sys
 import textwrap
 import threading
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum, auto, unique
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Type
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Dict,
+    Optional,
+    Type,
+)
 
 import sentry_sdk
 import structlog
@@ -24,21 +34,26 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from .. import schema
+from ..config import Config
 from ..logging import setup_logging
-from ..predictor import (
-    get_input_type,
-    get_output_type,
-    get_predictor_ref,
-    load_config,
-    load_slim_predictor_from_ref,
-)
-from ..types import PYDANTIC_V2, CogConfig
+from ..mode import Mode
+from ..types import PYDANTIC_V2
+
+# [cb] `..files.upload_file` / `..json.upload_files` are intentionally NOT
+# imported: file upload is disabled in this fork (see json.upload_files).
+
+try:
+    from .._version import __version__
+except ImportError:
+    __version__ = "dev"
 
 if PYDANTIC_V2:
     from .helpers import (
         unwrap_pydantic_serialization_iterators,
         update_openapi_schema_for_pydantic_2,
     )
+else:
+    from .helpers import update_nullable_optional
 
 from .probes import ProbeHelper
 from .runner import (
@@ -85,6 +100,7 @@ class Health(Enum):
     BUSY = auto()
     SETUP_FAILED = auto()
     DEFUNCT = auto()
+    UNHEALTHY = auto()
 
 
 class MyState:
@@ -126,17 +142,40 @@ def add_setup_failed_routes(
 
 
 def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
-    config: CogConfig,  # pylint: disable=redefined-outer-name
+    cog_config: Config,
     shutdown_event: Optional[threading.Event],  # pylint: disable=redefined-outer-name
-    threads: int = 1,  # pylint: disable=redefined-outer-name
+    app_threads: Optional[int] = None,
     upload_url: Optional[str] = None,
-    mode: str = "predict",
+    mode: Mode = Mode.PREDICT,
     is_build: bool = False,
     await_explicit_shutdown: bool = False,  # pylint: disable=redefined-outer-name
 ) -> MyFastAPI:
+    started_at = datetime.now(tz=timezone.utc)
+
+    @asynccontextmanager
+    async def lifespan(app: MyFastAPI) -> AsyncGenerator[None, None]:
+        # Startup code (was previously in @app.on_event("startup"))
+        # check for early setup failures
+        if (
+            app.state.setup_result
+            and app.state.setup_result.status == schema.Status.FAILED
+        ):
+            # signal shutdown if interactive run
+            if shutdown_event and not await_explicit_shutdown:
+                shutdown_event.set()
+        else:
+            setup_task = runner.setup()
+            setup_task.add_done_callback(_handle_setup_done)
+
+        yield
+
+        # Shutdown code (was previously in @app.on_event("shutdown"))
+        worker.terminate()
+
     app = MyFastAPI(  # pylint: disable=redefined-outer-name
         title="Cog",  # TODO: mention model name?
         # version=None # TODO
+        lifespan=lifespan,
     )
 
     def custom_openapi() -> Dict[str, Any]:
@@ -152,6 +191,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             # See: https://github.com/tiangolo/fastapi/pull/9873#issuecomment-1997105091
             if PYDANTIC_V2:
                 update_openapi_schema_for_pydantic_2(openapi_schema)
+            else:
+                update_nullable_optional(openapi_schema, app)
 
             app.openapi_schema = openapi_schema
 
@@ -161,7 +202,6 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
 
     app.state.health = Health.STARTING
     app.state.setup_result = None
-    started_at = datetime.now(tz=timezone.utc)
 
     # shutdown is needed no matter what happens
     @app.post("/shutdown")
@@ -172,17 +212,24 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         return JSONResponse({}, status_code=200)
 
     try:
-        predictor_ref = get_predictor_ref(config, mode)
-        predictor = load_slim_predictor_from_ref(predictor_ref, "predict")
-        InputType = get_input_type(predictor)  # pylint: disable=invalid-name
-        OutputType = get_output_type(predictor)  # pylint: disable=invalid-name
+        predictor_info = cog_config.get_predictor_info(mode=Mode.PREDICT)
     except Exception:  # pylint: disable=broad-exception-caught
         msg = "Error while loading predictor:\n\n" + traceback.format_exc()
         add_setup_failed_routes(app, started_at, msg)
         return app
 
-    worker = make_worker(predictor_ref=predictor_ref)
-    runner = PredictionRunner(worker=worker)
+    InputType = predictor_info.input_type
+    OutputType = predictor_info.output_type
+    is_async = predictor_info.is_async
+
+    worker = make_worker(
+        predictor_ref=cog_config.get_predictor_ref(mode=mode),
+        is_async=is_async,
+        is_train=False if mode == Mode.PREDICT else True,
+        max_concurrency=cog_config.max_concurrency,
+        has_user_healthcheck=predictor_info.has_healthcheck,
+    )
+    runner = PredictionRunner(worker=worker, max_concurrency=cog_config.max_concurrency)
 
     class PredictionRequest(schema.PredictionRequest.with_types(input_type=InputType)):
         pass
@@ -199,7 +246,9 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         output_type=OutputType
     )
 
-    http_semaphore = asyncio.Semaphore(threads)
+    if app_threads is None:
+        app_threads = 1 if cog_config.requires_gpu else _cpu_count()
+    http_semaphore = asyncio.Semaphore(app_threads)
 
     def limited(f: "Callable[P, Awaitable[T]]") -> "Callable[P, Awaitable[T]]":
         @functools.wraps(f)
@@ -209,40 +258,50 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
 
         return wrapped
 
-    @app.on_event("startup")
-    def startup() -> None:
-        # check for early setup failures
-        if (
-            app.state.setup_result
-            and app.state.setup_result.status == schema.Status.FAILED
-        ):
-            # signal shutdown if interactive run
-            if shutdown_event and not await_explicit_shutdown:
-                shutdown_event.set()
-        else:
-            setup_task = runner.setup()
-            setup_task.add_done_callback(_handle_setup_done)
-
-    @app.on_event("shutdown")
-    def shutdown() -> None:
-        worker.terminate()
+    index_document = {
+        "cog_version": __version__,
+        "docs_url": "/docs",
+        "openapi_url": "/openapi.json",
+        "shutdown_url": "/shutdown",
+        "healthcheck_url": "/health-check",
+        "readiness_url": "/health/ready",
+        "liveness_url": "/health/live",
+        "predictions_url": "/predictions",
+    }
 
     @app.get("/")
     async def root() -> Any:
-        return {
-            # "cog_version": "", # TODO
-            "docs_url": "/docs",
-            "openapi_url": "/openapi.json",
-        }
+        return index_document
 
     @app.get("/health-check")
     async def healthcheck() -> Any:
         if app.state.health == Health.READY:
             health = Health.BUSY if runner.is_busy() else Health.READY
+
+            # Run custom healthcheck. If it doesn't exist, this will
+            # always return healthy (healthcheck_result.error = False)
+            healthcheck_result = await runner.healthcheck()
+            custom_health_ok = not healthcheck_result.error
+            custom_health_error = healthcheck_result.error_detail
+
+            if not custom_health_ok:
+                health = Health.UNHEALTHY
         else:
             health = app.state.health
+            custom_health_ok = True
+            custom_health_error = None
+
         setup = app.state.setup_result.to_dict() if app.state.setup_result else {}
-        return jsonable_encoder({"status": health.name, "setup": setup})
+
+        response = {
+            "status": health.name,
+            "setup": setup,
+        }
+
+        if not custom_health_ok:
+            response["user_healthcheck_error"] = custom_health_error
+
+        return jsonable_encoder(response)
 
     @app.get("/health/ready")
     def healthcheck_readiness() -> Any:
@@ -294,17 +353,18 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         respond_async = False
 
         with trace_context(make_trace_context(traceparent, tracestate)):
-            return _predict(
+            return await _predict(
                 request=request,
                 response_type=NewPredictionResponse,
                 respond_async=respond_async,
             )
 
-    def _predict(
+    async def _predict(
         *,
         request: NewPredictionRequest,
         response_type: Type[schema.NewPredictionResponse],
         respond_async: bool = False,
+        is_train: bool = False,
     ) -> Response:
         # [compat] If no body is supplied, assume that this model can be run
         # with empty input. This will throw a ValidationError if that's not
@@ -327,8 +387,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             #     task_kwargs["upload_url"] = upload_url
 
             try:
-                # predict_task = runner.predict(instance_request, task_kwargs=task_kwargs)
-                predict_task = runner.predict(instance_request)
+                # predict_task = runner.predict(instance_request, is_train, task_kwargs=task_kwargs)
+                predict_task = runner.predict(instance_request, is_train)
             except RunnerBusyError:
                 return JSONResponse(
                     {"detail": "Already running a prediction"}, status_code=409
@@ -371,7 +431,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             try:
                 PredictionResponse(**response_object)
             except ValidationError as e:
-                _log_invalid_output(e)
+                _log_invalid_output(e, mode)
                 raise HTTPException(status_code=500, detail=str(e)) from e
 
             all_results.append(response_object["output"])
@@ -379,7 +439,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         try:
             response = NewPredictionResponse(predictions=all_results)
         except ValidationError as e:
-            _log_invalid_output(e)
+            _log_invalid_output(e, mode)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
         response_object = response.dict()
@@ -420,17 +480,20 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
     return app
 
 
-def _log_invalid_output(error: Any) -> None:
+def _log_invalid_output(error: Any, mode: Mode) -> None:
+    function_name = "predict()"
+    if mode == Mode.TRAIN:
+        function_name = "train()"
     log.error(
         textwrap.dedent(
             f"""\
-            The return value of predict() was not valid:
+            The return value of {function_name} was not valid:
 
             {error}
 
             Check that your predict function is in this form, where `output_type` is the same as the type you are returning (e.g. `str`):
 
-                def predict(...) -> output_type:
+                def {function_name} -> output_type:
                     ...
            """
         )
@@ -484,7 +547,79 @@ def _cpu_count() -> int:
 
 
 if __name__ == "__main__":
+    # Try to use Rust coglet server if available
+    try:
+        import coglet  # type: ignore
+
+        # Parse minimal args needed for Rust server
+        parser = argparse.ArgumentParser(description="Cog HTTP server")
+        parser.add_argument(
+            "-v", "--version", action="store_true", help="Show version and exit"
+        )
+        parser.add_argument(
+            "--host",
+            dest="host",
+            type=str,
+            default="0.0.0.0",
+            help="Host to bind to",
+        )
+        parser.add_argument(
+            "--await-explicit-shutdown",
+            dest="await_explicit_shutdown",
+            type=bool,
+            default=False,
+            help="Ignore SIGTERM and wait for a request to /shutdown (or a SIGINT) before exiting",
+        )
+        parser.add_argument(
+            "--x-mode",
+            dest="mode",
+            type=Mode,
+            default=Mode.PREDICT,
+            choices=list(Mode),
+            help="Experimental: Run in 'predict' or 'train' mode",
+        )
+        # Accept but ignore other args for compatibility
+        parser.add_argument("--threads", dest="threads", type=int, default=None)
+        parser.add_argument("--upload-url", dest="upload_url", type=str, default=None)
+        args = parser.parse_args()
+
+        if args.version:
+            print(f"coglet (Rust) {coglet.__version__}")  # type: ignore[attr-defined]
+            sys.exit(0)
+
+        port = int(os.getenv("PORT", "5000"))
+        is_train = args.mode == Mode.TRAIN
+
+        # Get predictor ref from config
+        config = Config()
+        try:
+            predictor_ref = config.get_predictor_ref(args.mode)
+        except ValueError as e:
+            log.error(f"Configuration error: {e}")
+            log.error(
+                f"Please add '{args.mode}' to your cog.yaml file. "
+                f"Example: {args.mode}: predict.py:Predictor"
+            )
+            sys.exit(1)
+
+        log.info("Using Rust coglet server")
+        coglet.serve(  # type: ignore[attr-defined]
+            predictor_ref=predictor_ref,
+            host=args.host,
+            port=port,
+            await_explicit_shutdown=args.await_explicit_shutdown,
+            is_train=is_train,
+        )
+        sys.exit(0)
+    except ImportError:
+        # Fall back to Python HTTP server
+        log.info("Rust coglet not available, using Python HTTP server")
+        pass
+
     parser = argparse.ArgumentParser(description="Cog HTTP server")
+    parser.add_argument(
+        "-v", "--version", action="store_true", help="Show version and exit"
+    )
     parser.add_argument(
         "--host",
         dest="host",
@@ -516,12 +651,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--x-mode",
         dest="mode",
-        type=str,
-        default="predict",
-        choices=["predict", "train"],
+        type=Mode,
+        default=Mode.PREDICT,
+        choices=list(Mode),
         help="Experimental: Run in 'predict' or 'train' mode",
     )
     args = parser.parse_args()
+
+    if args.version:
+        print(f"cog.server.http {__version__}")
+        sys.exit(0)
 
     # log level is configurable so we can make it quiet or verbose for `cog predict`
     # cog predict --debug       # -> debug
@@ -529,13 +668,6 @@ if __name__ == "__main__":
     # docker run <image-name>   # -> info (default)
     log_level = logging.getLevelName(os.environ.get("COG_LOG_LEVEL", "INFO").upper())
     setup_logging(log_level=log_level)
-
-    config = load_config()
-
-    threads = args.threads
-    if threads is None:
-        gpu_enabled = config.get("build", {}).get("gpu", False)
-        threads = 1 if gpu_enabled else _cpu_count()
 
     shutdown_event = threading.Event()
 
@@ -546,9 +678,9 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, signal_set_event(shutdown_event))
 
     app = create_app(
-        config=config,
+        cog_config=Config(),
         shutdown_event=shutdown_event,
-        threads=threads,
+        app_threads=args.threads,
         upload_url=args.upload_url,
         mode=args.mode,
         await_explicit_shutdown=await_explicit_shutdown,

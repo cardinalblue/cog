@@ -1,10 +1,12 @@
 import io
 import pickle
+import random
+import string
 
 import pytest
 import responses
 
-from cog.types import Secret, URLFile, get_filename
+from cog.types import Secret, URLFile, URLPath, get_filename
 
 
 def test_urlfile_protocol_validation():
@@ -13,6 +15,11 @@ def test_urlfile_protocol_validation():
 
     with pytest.raises(ValueError):
         URLFile("data:text/plain,hello")
+
+
+def test_urlfile_custom_filename():
+    u = URLFile("https://example.com/some-path", filename="my_file.txt")
+    assert u.name == "my_file.txt"
 
 
 @responses.activate
@@ -61,18 +68,23 @@ def test_urlfile_can_be_pickled():
 
 @responses.activate
 def test_urlfile_can_be_pickled_even_once_loaded():
-    responses.get(
+    mock = responses.get(
         "https://example.com/some/url",
         json={"message": "hello world"},
         status=200,
     )
 
-    u = URLFile("https://example.com/some/url")
-    u.read()
+    u = URLFile("https://example.com/some/url", filename="my_file.txt")
+    assert u.name == "my_file.txt"
+    assert u.read() == b'{"message": "hello world"}'
 
     result = pickle.loads(pickle.dumps(u))
 
     assert isinstance(result, URLFile)
+    assert result.name == "my_file.txt"
+    assert result.read() == b'{"message": "hello world"}'
+
+    assert mock.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -136,3 +148,22 @@ def test_secret_type():
 
     assert secret.get_secret_value() == secret_value
     assert str(secret) == "**********"
+
+
+def test_truncate_filename_if_long():
+    # Test that a file too long exception is not raised.
+    random_str = "".join(
+        random.SystemRandom().choice(string.ascii_uppercase + string.digits)
+        for _ in range(350)
+    )
+    big_query = "query=" + random_str
+    filename = "waffwyyg~.zip"
+    url = "https://www.amazon.com/" + filename + "?" + big_query
+    fileobj = io.BytesIO()
+    url_path = URLPath(
+        source=url,
+        filename=filename + "?" + big_query,
+        fileobj=fileobj,
+    )
+    assert url_path.filename == "waffwyyg~~.zip"
+    _ = url_path.convert()

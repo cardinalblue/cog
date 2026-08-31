@@ -1,3 +1,4 @@
+import http
 import unittest.mock as mock
 
 import pytest
@@ -9,6 +10,29 @@ from .conftest import (
     uses_predictor,
     uses_predictor_with_client_options,
 )
+
+
+def test_index_document():
+    client = make_client(fixture_name="slow_setup")
+    resp = client.get("/")
+    data = resp.json()
+    for field in (
+        "cog_version",
+        "docs_url",
+        "openapi_url",
+        "shutdown_url",
+        "healthcheck_url",
+        "readiness_url",
+        "liveness_url",
+        "predictions_url",
+    ):
+        assert field in data
+        assert data[field] is not None
+
+    # [cb] Idempotent creation and cancellation are not exposed by this fork,
+    # so they must not be advertised in the index document.
+    for field in ("predictions_idempotent_url", "predictions_cancel_url"):
+        assert field not in data
 
 
 def test_setup_healthcheck():
@@ -34,7 +58,7 @@ def test_predict_works_with_functions(client, match):
 
 
 @uses_predictor("openapi_complex_input")
-def test_openapi_specification(client, static_schema):
+def test_openapi_specification(client):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
 
@@ -133,17 +157,20 @@ def test_openapi_specification(client, static_schema):
         "title": "Input",
         "required": [
             "no_default",
-            # "path",
-            # "image",
+            # "path",   # Not supported yet
+            # "image",  # Not supported yet
             "choices",
             "int_choices",
         ],
         "type": "object",
         "properties": {
-            "no_default": {
-                "title": "No Default",
-                "type": "string",
-                "x-order": 0,
+            "choices": {
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/choices",
+                    }
+                ],
+                "x-order": 3,
             },
             "default_without_input": {
                 "title": "Default Without Input",
@@ -157,27 +184,24 @@ def test_openapi_specification(client, static_schema):
                 "default": -10,
                 "x-order": 2,
             },
-            # "path": {
-            #     "title": "Path",
-            #     "description": "Some path",
-            #     "type": "string",
-            #     "format": "uri",
-            #     "x-order": 3,
-            # },
-            # "image": {
-            #     "title": "Image",
-            #     "description": "Some path",
-            #     "type": "string",
-            #     "format": "uri",
-            #     "x-order": 4,
-            # },
-            "choices": {
-                "allOf": [{"$ref": "#/components/schemas/choices"}],
-                "x-order": 3,
-            },
             "int_choices": {
-                "allOf": [{"$ref": "#/components/schemas/int_choices"}],
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/int_choices",
+                    }
+                ],
                 "x-order": 4,
+            },
+            "no_default": {
+                "title": "No Default",
+                "type": "string",
+                "x-order": 0,
+            },
+            "optional_str": {
+                "nullable": True,
+                "title": "Optional Str",
+                "type": "string",
+                "x-order": 5,
             },
         },
     }
@@ -233,7 +257,7 @@ def test_openapi_specification(client, static_schema):
 
 @uses_predictor("openapi_custom_output_type")
 def test_openapi_specification_with_custom_user_defined_output_type(
-    client, static_schema
+    client,
 ):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
@@ -262,15 +286,53 @@ def test_openapi_specification_with_custom_user_defined_output_type(
     }
 
 
-@uses_predictor("openapi_output_type")
-def test_openapi_specification_with_custom_user_defined_output_type_called_output(
-    client, static_schema
+@uses_predictor("openapi_optional_output_type")
+def test_openapi_specification_with_optional_output_type(
+    client,
 ):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
     schema = resp.json()
     # assert schema == static_schema
-    assert resp.json()["components"]["schemas"]["Output"] == {
+    assert schema["components"]["schemas"]["Output"] == {
+        "anyOf": [
+            {
+                "$ref": "#/components/schemas/ModelOutput",
+            },
+            {
+                "type": "string",
+            },
+        ],
+        "nullable": True,
+        "title": "Output",
+    }
+    assert schema["components"]["schemas"]["ModelOutput"] == {
+        "properties": {
+            "foo_number": {
+                "default": "42",
+                "title": "Foo Number",
+                "type": "integer",
+            },
+            "foo_string": {
+                "title": "Foo String",
+                "type": "string",
+                "nullable": True,
+            },
+        },
+        "type": "object",
+        "title": "ModelOutput",
+    }
+
+
+@uses_predictor("openapi_output_type")
+def test_openapi_specification_with_custom_user_defined_output_type_called_output(
+    client,
+):
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    schema = resp.json()
+    # assert schema == static_schema
+    assert schema["components"]["schemas"]["Output"] == {
         "properties": {
             "foo_number": {"default": "42", "title": "Foo Number", "type": "integer"},
             "foo_string": {
@@ -285,7 +347,7 @@ def test_openapi_specification_with_custom_user_defined_output_type_called_outpu
 
 
 @uses_predictor("openapi_output_yield")
-def test_openapi_specification_with_yield(client, static_schema):
+def test_openapi_specification_with_yield(client):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
     schema = resp.json()
@@ -301,9 +363,7 @@ def test_openapi_specification_with_yield(client, static_schema):
 
 
 @uses_predictor("yield_concatenate_iterator")
-def test_openapi_specification_with_yield_with_concatenate_iterator(
-    client, static_schema
-):
+def test_openapi_specification_with_yield_with_concatenate_iterator(client):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
 
@@ -321,7 +381,7 @@ def test_openapi_specification_with_yield_with_concatenate_iterator(
 
 
 @uses_predictor("openapi_output_list")
-def test_openapi_specification_with_list(client, static_schema):
+def test_openapi_specification_with_list(client):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
 
@@ -337,7 +397,7 @@ def test_openapi_specification_with_list(client, static_schema):
 
 
 @uses_predictor("openapi_input_int_choices")
-def test_openapi_specification_with_int_choices(client, static_schema):
+def test_openapi_specification_with_int_choices(client):
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
 
@@ -687,3 +747,73 @@ def test_weights_are_read_from_environment_variables(client, match):
     resp = client.post("/predictions", json={"instances": [{}]})
     assert resp.status_code == 200
     assert resp.json() == match({"predictions": ["hello"]})
+
+
+@uses_predictor("input_deprecated")
+def test_openapi_specification_with_deprecated(client, static_schema):
+    resp = client.get("/openapi.json")
+    assert resp.status_code == http.HTTPStatus.OK
+
+    schema = resp.json()
+    schemas = schema["components"]["schemas"]
+
+    assert schemas["Input"]["properties"]["text"] == {
+        "x-order": 0,
+        "deprecated": True,
+        "type": "string",
+        "title": "Text",
+        "description": "Some deprecated text",
+    }
+
+
+@uses_predictor("healthcheck_healthy")
+def test_healthcheck_healthy(client):
+    """Test that a healthy healthcheck returns READY status."""
+    resp = client.get("/health-check")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "READY"
+    # Healthy healthcheck should not have the user error field
+    assert "user_healthcheck_error" not in data
+
+
+@uses_predictor("healthcheck_unhealthy")
+def test_healthcheck_unhealthy(client):
+    """Test that an unhealthy healthcheck returns UNHEALTHY status."""
+    resp = client.get("/health-check")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "UNHEALTHY"
+    assert (
+        "user_healthcheck_error" in data
+        and data["user_healthcheck_error"]
+        == "Healthcheck failed: user-defined healthcheck returned False"
+    )
+
+
+@uses_predictor("healthcheck_exception")
+def test_healthcheck_exception(client):
+    """Test that a healthcheck that raises an exception returns error."""
+    resp = client.get("/health-check")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "UNHEALTHY"
+    assert (
+        "user_healthcheck_error" in data
+        and data["user_healthcheck_error"]
+        == "Healthcheck failed: Healthcheck failed with error"
+    )
+
+
+@uses_predictor("healthcheck_timeout")
+def test_healthcheck_timeout(client):
+    """Test that a healthcheck that times out returns timeout error."""
+    resp = client.get("/health-check")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "UNHEALTHY"
+    assert (
+        "user_healthcheck_error" in data
+        and data["user_healthcheck_error"]
+        == "Healthcheck failed: user-defined healthcheck timed out after 5.0 seconds"
+    )

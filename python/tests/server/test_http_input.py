@@ -3,6 +3,7 @@ import threading
 import pytest
 
 from cog import schema
+from cog.config import Config
 from cog.server.http import Health, create_app
 from cog.types import PYDANTIC_V2
 
@@ -36,6 +37,15 @@ def test_good_str_input(client, match):
     resp = client.post("/predictions", json={"instances": [{"text": "baz"}]})
     assert resp.status_code == 200
     assert resp.json() == match({"predictions": ["baz"]})
+
+
+@uses_predictor("input_kwargs")
+def test_kwargs_input(client, match):
+    """Check we support kwargs input fields"""
+    input = {"animal": "giraffe", "no": 5}
+    resp = client.post("/predictions", json={"instances": [input]})
+    assert resp.status_code == 200
+    assert resp.json() == match({"predictions": [input]})
 
 
 @uses_predictor("input_integer")
@@ -223,7 +233,7 @@ def test_choices_str(client):
 
 
 @uses_predictor("input_choices_iterable")
-def test_choices_str(client):
+def test_choices_str_iterable(client):
     resp = client.post("/predictions", json={"instances": [{"text": "foo"}]})
     assert resp.status_code == 200
     resp = client.post("/predictions", json={"instances": [{"text": "baz"}]})
@@ -308,7 +318,7 @@ def test_union_integers(client):
 def test_untyped_inputs():
     config = {"predict": _fixture_path("input_untyped")}
     app = create_app(
-        config=config,
+        cog_config=Config(config),
         shutdown_event=threading.Event(),
         upload_url="input_untyped",
     )
@@ -319,10 +329,13 @@ def test_untyped_inputs():
     )
 
 
+# [cb] This fork validates against a deny-list, not upstream's allow-list, so
+# an arbitrary unsupported annotation no longer fails setup. See
+# test_cb_unsupported_input_cog_file_and_path for the types we do reject.
 # def test_input_with_unsupported_type():
 #     config = {"predict": _fixture_path("input_unsupported_type")}
 #     app = create_app(
-#         config=config,
+#         cog_config=Config(config),
 #         shutdown_event=threading.Event(),
 #         upload_url="input_untyped",
 #     )
@@ -368,11 +381,15 @@ def test_cb_complex_input(client):
     assert resp.status_code == 422
 
 
+# [cb] upstream's test_path_or_none is omitted: Path inputs are unsupported in
+# this fork.
+
+
 def test_cb_unsupported_input_cog_file_and_path():
     for name in ["input_file", "input_path"]:
         config = {"predict": _fixture_path(name)}
         app = create_app(
-            config=config,
+            cog_config=Config(config),
             shutdown_event=threading.Event(),
         )
         assert app.state.health == Health.SETUP_FAILED

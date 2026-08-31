@@ -1,28 +1,59 @@
+import asyncio
+import contextlib
+import inspect
 import multiprocessing
 import os
+import queue
 import signal
 import sys
 import threading
+import time
 import traceback
 import types
 import uuid
+import weakref
+from concurrent import futures
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, auto, unique
 from multiprocessing.connection import Connection
-from typing import Any, Callable, Dict, Optional, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import structlog
+from attrs import define
 from sentry_sdk import capture_exception
 
 from cog.errors import PredictorBaseError, PredictorInputError
 
+from ..base_predictor import BasePredictor
 from ..json import make_encodeable
-from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup
+from ..predictor import (
+    extract_setup_weights,
+    get_healthcheck,
+    get_predict,
+    get_train,
+    has_setup_weights,
+    load_predictor_from_ref,
+)
 from ..types import PYDANTIC_V2, URLPath
+from ..wait import wait_for_env
+from .connection import AsyncConnection, LockedConnection
 from .eventtypes import (
+    Cancel,
     Done,
+    Envelope,
+    Healthcheck,
     Log,
     PredictionInput,
+    PredictionMetric,
     PredictionOutput,
     PredictionOutputType,
     Shutdown,
@@ -32,7 +63,8 @@ from .exceptions import (
     FatalWorkerException,
     InvalidStateException,
 )
-from .helpers import StreamRedirector
+from .helpers import SimpleStreamRedirector, StreamRedirector
+from .scope import Scope, _get_current_scope, evolve_scope, scope
 
 if PYDANTIC_V2:
     from .helpers import unwrap_pydantic_serialization_iterators
@@ -43,61 +75,268 @@ _PublicEventType = Union[Done, Log, PredictionOutput, PredictionOutputType]
 
 log = structlog.get_logger("cog.server.worker")
 
+# Timeout for healthcheck execution in seconds
+HEALTHCHECK_TIMEOUT = 5.0
+
 
 @unique
 class WorkerState(Enum):
     NEW = auto()
     STARTING = auto()
     READY = auto()
-    PROCESSING = auto()
     DEFUNCT = auto()
 
 
+@define
+class PredictionRequest:
+    tag: Optional[str]
+
+
+@define
+class CancelRequest:
+    tag: Optional[str]
+
+
+@define
+class PredictionState:
+    tag: Optional[str]
+    payload: Dict[str, Any]
+    result: "Future[Done]"
+
+    cancel_sent: bool = False
+
+
+class _Healthchecker:
+    def __init__(self, events: Connection) -> None:
+        self._events = events
+        self._queue: "queue.SimpleQueue[Tuple[str, Future[Done]]]" = queue.SimpleQueue()
+        self._thread: Optional[threading.Thread] = None
+
+    def check(self) -> "Future[Done]":
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._run,
+                daemon=True,
+            )
+            self._thread.start()
+
+        result: "Future[Done]" = Future()
+        tag = uuid.uuid4().hex
+        self._queue.put((tag, result))
+        return result
+
+    def _run(self) -> None:
+        while True:
+            try:
+                tag, result = self._queue.get()
+            except Exception:
+                break
+
+            try:
+                self._events.send(Envelope(event=Healthcheck(), tag=tag))
+                deadline = time.monotonic() + HEALTHCHECK_TIMEOUT
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not self._events.poll(remaining):
+                        result.set_result(
+                            Done(
+                                error=True,
+                                error_detail=f"Healthcheck failed: user-defined healthcheck timed out after {HEALTHCHECK_TIMEOUT} seconds",
+                            )
+                        )
+                        break
+                    resp = cast(Envelope, self._events.recv())
+                    if resp.tag == tag:
+                        if isinstance(resp.event, Done):
+                            result.set_result(resp.event)
+                        else:
+                            result.set_result(
+                                Done(
+                                    error=True,
+                                    error_detail="Unexpected response from healthcheck pipe",
+                                )
+                            )
+                        break
+            except Exception as exc:
+                result.set_result(
+                    Done(
+                        error=True,
+                        error_detail=f"Healthcheck IPC error: {exc}",
+                    )
+                )
+
+
 class Worker:
-    def __init__(self, child: "ChildWorker", events: Connection) -> None:
+    @property
+    def uses_concurrency(self) -> bool:
+        return self._max_concurrency > 1
+
+    def __init__(
+        self,
+        child: "_ChildWorker",
+        events: Connection,
+        max_concurrency: int = 1,
+        healthcheck_events: Optional[Connection] = None,
+    ) -> None:
         self._child = child
         self._events = events
+        self._healthchecker: Optional[_Healthchecker] = (
+            _Healthchecker(healthcheck_events)
+            if healthcheck_events is not None
+            else None
+        )
 
-        self._allow_cancel = False
         self._sent_shutdown_event = False
         self._state = WorkerState.NEW
         self._terminating = False
 
-        self._result: Optional["Future[Done]"] = None
-        self._subscribers: Dict[int, Callable[[_PublicEventType], None]] = {}
+        self._setup_result: "Future[Done]" = Future()
+        self._subscribers_lock = threading.Lock()
+        self._subscribers: Dict[
+            int, Tuple[Callable[[_PublicEventType], None], Optional[str]]
+        ] = {}
 
-        self._predict_payload: Optional[Dict[str, Any]] = None
-        self._predict_start = threading.Event()  # set when a prediction is started
+        self._max_concurrency = max_concurrency
 
-        self._pool = ThreadPoolExecutor(max_workers=1)
+        self._predictions_lock = threading.Lock()
+        self._predictions_in_flight: Dict[Optional[str], PredictionState] = {}
+
+        self._event_consumer_pool = ThreadPoolExecutor(max_workers=1)
+        self._prediction_start_pool = ThreadPoolExecutor(max_workers=max_concurrency)
+        self._input_download_pool = ThreadPoolExecutor(max_workers=8)
         self._event_consumer = None
 
     def setup(self) -> "Future[Done]":
         self._assert_state(WorkerState.NEW)
         self._state = WorkerState.STARTING
-        result = Future()
-        self._result = result
         self._child.start()
-        self._event_consumer = self._pool.submit(self._consume_events)
+        self._event_consumer = self._event_consumer_pool.submit(self._consume_events)
+        return self._setup_result
+
+    def predict(
+        self,
+        payload: Dict[str, Any],
+        tag: Optional[str] = None,
+        *,
+        context: Optional[Dict[str, str]] = None,
+    ) -> "Future[Done]":
+        # TODO: tag is Optional, but it's required when in concurrent mode and
+        # basically unnecessary in sequential mode. Should we have a separate
+        # ConcurrentWorker?
+        if self._max_concurrency > 1 and tag is None:
+            raise TypeError(
+                "Invalid operation: tag is required when Worker has max_concurrency > 1"
+            )
+
+        with self._predictions_lock:
+            if len(self._predictions_in_flight) >= self._max_concurrency:
+                raise InvalidStateException(
+                    "Invalid operation: maximum predictions in flight reached"
+                )
+            if tag in self._predictions_in_flight:
+                raise InvalidStateException(
+                    f"Invalid operation: prediction with tag {tag} already running"
+                )
+            self._assert_state(WorkerState.READY)
+            result = Future()
+            self._predictions_in_flight[tag] = PredictionState(tag, payload, result)
+
+        self._prediction_start_pool.submit(
+            self._start_prediction(tag, payload, context=context)
+        )
         return result
 
-    def predict(self, payload: Dict[str, Any]) -> "Future[Done]":
-        self._assert_state(WorkerState.READY)
-        self._state = WorkerState.PROCESSING
-        self._allow_cancel = True
-        result = Future()
-        self._result = result
-        self._predict_payload = payload
-        self._predict_start.set()
-        return result
+    def _start_prediction(
+        self,
+        tag: Optional[str],
+        payload: Dict[str, Any],
+        *,
+        context: Optional[Dict[str, str]],
+    ) -> Callable[[], None]:
+        def start_prediction() -> None:
+            try:
+                to_await = []
+                futs = {}
+                # Prepare payload asynchronously (download URLPath objects)
+                for k, v in payload.items():
+                    # Check if v is an instance of URLPath
+                    if isinstance(v, URLPath):
+                        futs[k] = self._input_download_pool.submit(v.convert)
+                        to_await.append(futs[k])
+                    # Check if v is a list of URLPath instances
+                    elif isinstance(v, list) and all(
+                        isinstance(item, URLPath) for item in v
+                    ):
+                        futs[k] = [
+                            self._input_download_pool.submit(item.convert) for item in v
+                        ]
+                        to_await += futs[k]
+                done, not_done = futures.wait(
+                    to_await, return_when=futures.FIRST_EXCEPTION
+                )
 
-    def subscribe(self, subscriber: Callable[[_PublicEventType], None]) -> int:
+                if len(not_done) > 0:
+                    # if any future isn't done, this is because one of the
+                    # futures raised an exception. first we cancel outstanding
+                    # work
+                    for fut in not_done:
+                        fut.cancel()
+                    # then we find an exception to raise
+                    for fut in done:
+                        fut.result()  # raises if the future finished with an exception
+                    # we should never get here
+                    raise Exception(
+                        "Internal error: lost track of exception while downloading input files"
+                    )
+
+                # all futures are done. some might still have raised an
+                # exception, but when we call fut.result() that will re-raise
+                # and do the right thing
+                for k, v in futs.items():
+                    if isinstance(v, list):
+                        payload[k] = []
+                        for fut in v:
+                            payload[k].append(fut.result())
+                    elif isinstance(v, Future):
+                        payload[k] = v.result()
+                # send the prediction to the child to start
+                self._events.send(
+                    Envelope(
+                        event=PredictionInput(payload=payload, context=context or {}),
+                        tag=tag,
+                    )
+                )
+            except Exception as e:
+                done = Done(error=True, error_detail=str(e))
+                self._publish(Envelope(done, tag))
+                self._complete_prediction(done, tag)
+
+        return start_prediction
+
+    def subscribe(
+        self,
+        subscriber: Callable[[_PublicEventType], None],
+        tag: Optional[str] = None,
+    ) -> int:
         sid = uuid.uuid4().int
-        self._subscribers[sid] = subscriber
+        with self._subscribers_lock:
+            self._subscribers[sid] = (subscriber, tag)
         return sid
 
     def unsubscribe(self, sid: int) -> None:
-        del self._subscribers[sid]
+        with self._subscribers_lock:
+            del self._subscribers[sid]
+
+    def healthcheck(self) -> "Future[Done]":
+        """Execute the healthcheck method if defined."""
+        self._assert_state(WorkerState.READY)
+
+        if self._healthchecker is None:
+            result: "Future[Done]" = Future()
+            result.set_result(Done())
+            return result
+
+        return self._healthchecker.check()
 
     def shutdown(self, timeout: Optional[float] = None) -> None:
         """
@@ -108,13 +347,13 @@ class Worker:
         self._state = WorkerState.DEFUNCT
 
         if self._child.is_alive() and not self._sent_shutdown_event:
-            self._events.send(Shutdown())
+            self._events.send(Envelope(event=Shutdown()))
             self._sent_shutdown_event = True
 
         if self._event_consumer:
             self._event_consumer.result(timeout=timeout)
 
-        self._pool.shutdown()
+        self._event_consumer_pool.shutdown()
 
     def terminate(self) -> None:
         """
@@ -128,12 +367,15 @@ class Worker:
             self._child.terminate()
             self._child.join()
 
-        self._pool.shutdown(wait=False)
+        self._event_consumer_pool.shutdown(wait=False)
 
-    def cancel(self) -> None:
-        if self._allow_cancel:
-            self._child.send_cancel()
-            self._allow_cancel = False
+    def cancel(self, tag: Optional[str] = None) -> None:
+        with self._predictions_lock:
+            predict_state = self._predictions_in_flight.get(tag)
+            if predict_state and not predict_state.cancel_sent:
+                self._child.send_cancel_signal()
+                self._events.send(Envelope(event=Cancel(), tag=tag))
+                predict_state.cancel_sent = True
 
     def _assert_state(self, state: WorkerState) -> None:
         if self._state != state:
@@ -146,11 +388,11 @@ class Worker:
             if not self._events.poll(0.1):
                 continue
 
-            ev = self._events.recv()
-            self._publish(ev)
+            e = self._events.recv()
+            self._publish(e)
 
-            if isinstance(ev, Done):
-                return ev
+            if isinstance(e.event, Done):
+                return e.event
         return None
 
     def _consume_events(self) -> None:
@@ -166,115 +408,108 @@ class Worker:
         # If we didn't get a done event, the child process died.
         if not done:
             exitcode = self._child.exitcode
-            assert self._result
-            self._result.set_exception(
+            self._setup_result.set_exception(
                 FatalWorkerException(
                     f"Predictor setup failed for an unknown reason. It might have run out of memory? (exitcode {exitcode})"
                 )
             )
-            self._result = None
             self._state = WorkerState.DEFUNCT
             return
         if done.error:
-            assert self._result
-            self._result.set_exception(
+            self._setup_result.set_exception(
                 FatalWorkerException(
                     "Predictor errored during setup: " + done.error_detail
                 )
             )
-            self._result = None
             self._state = WorkerState.DEFUNCT
             return
 
-        assert self._result
-
         # We capture the setup future and then set state to READY before
         # completing it, so that we can immediately accept work.
-        result = self._result
-        self._result = None
         self._state = WorkerState.READY
-        result.set_result(done)
+        self._setup_result.set_result(done)
 
-        # Predictions
+        # Main event loop
         while self._child.is_alive():
-            start = self._predict_start.wait(timeout=0.1)
-            if not start:
+            # wait for events from the child worker
+            if not self._events.poll(0.1):
                 continue
 
-            assert self._predict_payload is not None
-            assert self._result
-
-            # Prepare payload (download URLPath objects)
-            try:
-                _prepare_payload(self._predict_payload)
-            except Exception as e:
-                done = Done(error=True, error_detail=str(e))
-                self._publish(done)
-            else:
-                # Start the prediction
-                self._events.send(PredictionInput(payload=self._predict_payload))
-
-                # Consume and publish prediction events
-                done = self._consume_events_until_done()
-                if not done:
-                    break
-
-            # We capture the predict future and then reset state before
-            # completing it, so that we can immediately accept work.
-            result = self._result
-            self._predict_payload = None
-            self._predict_start.clear()
-            self._result = None
-            self._state = WorkerState.READY
-            self._allow_cancel = False
-            result.set_result(done)
+            ev = self._events.recv()
+            self._publish(ev)
+            if isinstance(ev.event, Done):
+                self._complete_prediction(ev.event, ev.tag)
 
         # If we dropped off the end off the end of the loop, it's because the
-        # child process died.
+        # child process died.  First, process any remaining messages on the connection
+        while self._events.poll():
+            ev = self._events.recv()
+            self._publish(ev)
+            if isinstance(ev.event, Done):
+                self._complete_prediction(ev.event, ev.tag)
+
         if not self._terminating:
-            if self._result:
-                exitcode = self._child.exitcode
-                self._result.set_exception(
-                    FatalWorkerException(
-                        f"Prediction failed for an unknown reason. It might have run out of memory? (exitcode {exitcode})"
-                    )
-                )
-                self._result = None
             self._state = WorkerState.DEFUNCT
+            with self._predictions_lock:
+                for state in self._predictions_in_flight.values():
+                    exitcode = self._child.exitcode
+                    state.result.set_exception(
+                        FatalWorkerException(
+                            f"Prediction failed for an unknown reason. It might have run out of memory? (exitcode {exitcode})"
+                        )
+                    )
+                self._predictions_in_flight.clear()
 
-    def _publish(self, ev: _PublicEventType) -> None:
-        for subscriber in self._subscribers.values():
-            try:
-                subscriber(ev)
-            except Exception:
-                log.warn("publish failed", subscriber=subscriber, ev=ev, exc_info=True)
+    def _complete_prediction(self, done: Done, tag: Optional[str]) -> None:
+        # We update the in-flight dictionary before completing the prediction
+        # future, so that we can immediately accept work.
+        with self._predictions_lock:
+            predict_state = self._predictions_in_flight.pop(tag)
+        predict_state.result.set_result(done)
+
+    def _publish(self, e: Envelope) -> None:
+        with self._subscribers_lock:
+            subscribers_copy = list(self._subscribers.values())
+        for subscriber, requested_tag in subscribers_copy:
+            if requested_tag is None or e.tag == requested_tag:
+                try:
+                    subscriber(cast(_PublicEventType, e.event))
+                except Exception:
+                    log.warn(
+                        "publish failed",
+                        subscriber=subscriber,
+                        tag=e.tag,
+                        event=e.event,
+                        exc_info=True,
+                    )
 
 
-class LockedConn:
-    def __init__(self, conn: Connection) -> None:
-        self.conn = conn
-        self._lock = _spawn.Lock()
-
-    def send(self, obj: Any) -> None:
-        with self._lock:
-            self.conn.send(obj)
-
-    def recv(self) -> Any:
-        return self.conn.recv()
-
-
-class ChildWorker(_spawn.Process):  # type: ignore
+class _ChildWorker(_spawn.Process):  # type: ignore
     def __init__(
         self,
         predictor_ref: str,
+        *,
+        is_async: bool,
+        is_train: bool,
         events: Connection,
+        healthcheck_events: Optional[Connection] = None,
+        max_concurrency: int = 1,
         tee_output: bool = True,
     ) -> None:
         self._predictor_ref = predictor_ref
         self._predictor: Optional[BasePredictor] = None
-        self._events = LockedConn(events)
+        self._events: Union[AsyncConnection, LockedConnection] = LockedConnection(
+            events
+        )
+        self._healthcheck_events = healthcheck_events
         self._tee_output = tee_output
         self._cancelable = False
+        self._max_concurrency = max_concurrency
+
+        # for synchronous predictors only! async predictors use current_scope()._tag instead
+        self._sync_tag: Optional[str] = None
+        self._has_async_predictor = is_async
+        self._is_train = is_train
 
         super().__init__()
 
@@ -284,43 +519,357 @@ class ChildWorker(_spawn.Process):  # type: ignore
         # shutdown is coordinated by the parent process.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-        # We use SIGUSR1 to signal an interrupt for cancelation.
-        signal.signal(signal.SIGUSR1, self._signal_handler)
+        # Initially, we ignore SIGUSR1.
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
 
-        redirector = StreamRedirector(
-            tee=self._tee_output,
-            callback=self._stream_write_hook,
-        )
+        if self._has_async_predictor:
+            redirector = SimpleStreamRedirector(
+                callback=self._stream_write_hook,
+                tee=self._tee_output,
+            )
+        else:
+            redirector = StreamRedirector(
+                callback=self._stream_write_hook,
+                tee=self._tee_output,
+            )
 
-        with redirector:
-            self._setup(redirector)
-            self._loop(redirector)
+        with scope(Scope(record_metric=self.record_metric)), redirector:
+            with self._handle_setup_error(redirector):
+                wait_for_env()
+                self._predictor = load_predictor_from_ref(self._predictor_ref)
 
-    def send_cancel(self) -> None:
+            # If load_predictor_from_ref hasn't returned a predictor instance then
+            # it has sent a error Done event and we're done here.
+            if not self._predictor:
+                return
+
+            if not self._validate_predictor(redirector):
+                return
+
+            predict = (
+                get_predict(self._predictor)
+                if not self._is_train
+                else get_train(self._predictor)
+            )
+
+            if self._healthcheck_events is not None:
+                hc_thread = threading.Thread(
+                    target=_run_healthcheck_loop,
+                    args=(self._healthcheck_events, self._predictor),
+                    daemon=True,
+                )
+                hc_thread.start()
+
+            if self._has_async_predictor:
+                assert isinstance(redirector, SimpleStreamRedirector)
+                predictor = self._predictor
+
+                async def _runner() -> None:
+                    if hasattr(predictor, "setup") and inspect.iscoroutinefunction(
+                        predictor.setup
+                    ):
+                        await self._asetup(redirector)
+                    else:
+                        self._setup(redirector)
+                    await self._aloop(predict, redirector)
+
+                asyncio.run(_runner())
+            else:
+                # We use SIGUSR1 to signal an interrupt for cancelation.
+                signal.signal(signal.SIGUSR1, self._signal_handler)
+
+                assert isinstance(redirector, StreamRedirector)
+                self._setup(redirector)
+                self._loop(
+                    predict,
+                    redirector,
+                )
+
+    def send_cancel_signal(self) -> None:
         if self.is_alive() and self.pid:
             os.kill(self.pid, signal.SIGUSR1)
 
-    def _setup(self, redirector: StreamRedirector) -> None:
+    def record_metric(self, name: str, value: Union[float, int]) -> None:
+        self._events.send(
+            Envelope(PredictionMetric(name, value), tag=self._current_tag)
+        )
+
+    @property
+    def _current_tag(self) -> Optional[str]:
+        if self._has_async_predictor:
+            return _get_current_scope()._tag
+        return self._sync_tag
+
+    def _validate_predictor(
+        self,
+        redirector: Union[StreamRedirector, SimpleStreamRedirector],
+    ) -> bool:
+        with self._handle_setup_error(redirector):
+            assert self._predictor
+
+            # Async models require python >= 3.11 so we can use asyncio.TaskGroup
+            # We should check for this before getting to this point
+            if self._has_async_predictor and sys.version_info < (3, 11):
+                raise FatalWorkerException(
+                    "Cog requires Python >=3.11 for `async def predict()` support"
+                )
+
+            if self._max_concurrency > 1 and not self._has_async_predictor:
+                raise FatalWorkerException(
+                    "max_concurrency > 1 requires an async predict function, e.g. `async def predict()`"
+                )
+
+            if (
+                hasattr(self._predictor, "setup")
+                and inspect.iscoroutinefunction(self._predictor.setup)
+                and not self._has_async_predictor
+            ):
+                raise FatalWorkerException(
+                    "Invalid predictor: to use an async setup method you must use an async predict method"
+                )
+
+            return True
+
+        return False
+
+    def _setup(
+        self, redirector: Union[StreamRedirector, SimpleStreamRedirector]
+    ) -> None:
+        with self._handle_setup_error(redirector, ensure_done_event=True):
+            assert self._predictor
+
+            # Could be a function or a class
+            if not hasattr(self._predictor, "setup"):
+                return
+
+            if not has_setup_weights(self._predictor):
+                self._predictor.setup()
+                return
+
+            weights = extract_setup_weights(self._predictor)
+            self._predictor.setup(weights=weights)  # type: ignore
+
+    async def _asetup(
+        self, redirector: Union[StreamRedirector, SimpleStreamRedirector]
+    ) -> None:
+        with self._handle_setup_error(redirector, ensure_done_event=True):
+            assert self._predictor
+
+            # Could be a function or a class
+            if not hasattr(self._predictor, "setup"):
+                return
+
+            if not has_setup_weights(self._predictor):
+                await self._predictor.setup()  # type: ignore
+                return
+
+            weights = extract_setup_weights(self._predictor)
+            await self._predictor.setup(weights=weights)  # type: ignore
+
+    def _loop(
+        self,
+        predict: Callable[..., Any],
+        redirector: StreamRedirector,
+    ) -> None:
+        while True:
+            e = cast(Envelope, self._events.recv())
+            if isinstance(e.event, Cancel):
+                # for sync predictors, this is handled via SIGUSR1 signals from
+                # the parent via send_cancel_signal
+                continue
+            elif isinstance(e.event, Shutdown):
+                break
+            elif isinstance(e.event, PredictionInput):
+                self._predict(
+                    e.tag,
+                    e.event.payload,
+                    context=e.event.context,
+                    predict=predict,
+                    redirector=redirector,
+                )
+            else:
+                print(f"Got unexpected event: {e.event}", file=sys.stderr)
+
+    async def _aloop(
+        self,
+        predict: Callable[..., Any],
+        redirector: SimpleStreamRedirector,
+    ) -> None:
+        # Unwrap and replace the events connection with an async one.
+        assert isinstance(self._events, LockedConnection)
+        self._events = AsyncConnection(self._events.connection)
+
+        async with asyncio.TaskGroup() as tg:
+            tasks = weakref.WeakValueDictionary[str | None, asyncio.Task[Any]]()
+            while True:
+                e = cast(Envelope, await self._events.recv())
+                if isinstance(e.event, Cancel):
+                    # NOTE: We don't check the _cancelable flag here, instead we rely
+                    # on the presence of the value in the weakmap to determine if
+                    # a prediction is actively being processed.
+                    task = tasks.get(e.tag)
+                    if not task:
+                        print(
+                            "Got cancel event for unrecognized prediction",
+                            file=sys.stderr,
+                        )
+                        continue
+
+                    task.cancel()
+                elif isinstance(e.event, Shutdown):
+                    break
+                elif isinstance(e.event, PredictionInput):
+                    tasks[e.tag] = tg.create_task(
+                        self._apredict(
+                            e.tag,
+                            e.event.payload,
+                            context=e.event.context,
+                            predict=predict,
+                            redirector=redirector,
+                        )
+                    )
+                else:
+                    print(f"Got unexpected event: {e.event}", file=sys.stderr)
+
+    def _predict(
+        self,
+        tag: Optional[str],
+        payload: Dict[str, Any],
+        *,
+        context: Dict[str, str],
+        predict: Callable[..., Any],
+        redirector: StreamRedirector,
+    ) -> None:
+        with (
+            evolve_scope(context=context),
+            self._handle_predict_error(redirector, tag=tag),
+        ):
+            result = predict(**payload)
+
+            if result:
+                if isinstance(result, types.GeneratorType):
+                    self._events.send(
+                        Envelope(
+                            event=PredictionOutputType(multi=True),
+                            tag=tag,
+                        )
+                    )
+                    for r in result:
+                        if PYDANTIC_V2:
+                            payload = make_encodeable(
+                                unwrap_pydantic_serialization_iterators(r)
+                            )
+                        else:
+                            payload = make_encodeable(r)
+                        self._events.send(
+                            Envelope(
+                                event=PredictionOutput(payload=payload),
+                                tag=tag,
+                            )
+                        )
+                else:
+                    self._events.send(
+                        Envelope(
+                            event=PredictionOutputType(multi=False),
+                            tag=tag,
+                        )
+                    )
+                    if PYDANTIC_V2:
+                        payload = make_encodeable(
+                            unwrap_pydantic_serialization_iterators(result)
+                        )
+                    else:
+                        payload = make_encodeable(result)
+                    self._events.send(
+                        Envelope(
+                            event=PredictionOutput(payload=payload),
+                            tag=tag,
+                        )
+                    )
+
+    async def _apredict(
+        self,
+        tag: Optional[str],
+        payload: Dict[str, Any],
+        *,
+        context: Dict[str, str],
+        predict: Callable[..., Any],
+        redirector: SimpleStreamRedirector,
+    ) -> None:
+        with (
+            evolve_scope(context=context, tag=tag),
+            self._handle_predict_error(redirector, tag=tag),
+        ):
+            future_result = predict(**payload)
+
+            if future_result:
+                if inspect.isasyncgen(future_result):
+                    self._events.send(
+                        Envelope(
+                            event=PredictionOutputType(multi=True),
+                            tag=tag,
+                        )
+                    )
+                    async for r in future_result:
+                        if PYDANTIC_V2:
+                            payload = make_encodeable(
+                                unwrap_pydantic_serialization_iterators(r)
+                            )
+                        else:
+                            payload = make_encodeable(r)
+                        self._events.send(
+                            Envelope(
+                                event=PredictionOutput(payload=payload),
+                                tag=tag,
+                            )
+                        )
+                else:
+                    result = await future_result
+                    self._events.send(
+                        Envelope(
+                            event=PredictionOutputType(multi=False),
+                            tag=tag,
+                        )
+                    )
+                    if PYDANTIC_V2:
+                        payload = make_encodeable(
+                            unwrap_pydantic_serialization_iterators(result)
+                        )
+                    else:
+                        payload = make_encodeable(result)
+                    self._events.send(
+                        Envelope(
+                            event=PredictionOutput(payload=payload),
+                            tag=tag,
+                        )
+                    )
+
+    @contextlib.contextmanager
+    def _handle_setup_error(
+        self,
+        redirector: Union[SimpleStreamRedirector, StreamRedirector],
+        *,
+        ensure_done_event: bool = False,
+    ) -> Iterator[None]:
         done = Done()
         try:
-            self._predictor = load_predictor_from_ref(self._predictor_ref)
-            # Could be a function or a class
-            if hasattr(self._predictor, "setup"):
-                run_setup(self._predictor)
+            yield
+        # [cb] A PredictorInputError is the caller's mistake, not a bug, so it
+        # is deliberately NOT reported to Sentry. Every other error is.
         except PredictorInputError as e:
             done.error = True
             done.error_detail = e.message
             done.error_type = e.error_type
             done.http_status_code = e.http_status_code
         except PredictorBaseError as e:
-            capture_exception(e)  # Cpaturing exception with sentry
+            capture_exception(e)  # Capturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = e.message
             done.error_type = e.error_type
             done.http_status_code = e.http_status_code
-        except Exception as e:
-            capture_exception(e)  # Cpaturing exception with sentry
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            capture_exception(e)  # Capturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = str(e)
@@ -337,73 +886,57 @@ class ChildWorker(_spawn.Process):  # type: ignore
                 redirector.drain(timeout=10)
             except TimeoutError:
                 self._events.send(
-                    Log(
-                        "WARNING: logs may be truncated due to excessive volume.",
-                        source="stderr",
+                    Envelope(
+                        event=Log(
+                            "WARNING: logs may be truncated due to excessive volume.",
+                            source="stderr",
+                        )
                     )
                 )
                 raise
-            self._events.send(done)
 
-    def _loop(self, redirector: StreamRedirector) -> None:
-        while True:
-            ev = self._events.recv()
-            if isinstance(ev, Shutdown):
-                break
-            if isinstance(ev, PredictionInput):
-                self._predict(ev.payload, redirector)
-            else:
-                print(f"Got unexpected event: {ev}", file=sys.stderr)
+            if done.error or ensure_done_event:
+                self._events.send(Envelope(event=done))
 
-    def _predict(
+    @contextlib.contextmanager
+    def _handle_predict_error(
         self,
-        payload: Dict[str, Any],
-        redirector: StreamRedirector,
-    ) -> None:
-        assert self._predictor
+        redirector: Union[SimpleStreamRedirector, StreamRedirector],
+        tag: Optional[str],
+    ) -> Iterator[None]:
         done = Done()
         send_done = True
         self._cancelable = True
+        self._sync_tag = tag
         try:
-            predict = get_predict(self._predictor)
-            result = predict(**payload)
-
-            if result:
-                if isinstance(result, types.GeneratorType):
-                    self._events.send(PredictionOutputType(multi=True))
-                    for r in result:
-                        if PYDANTIC_V2:
-                            payload = make_encodeable(
-                                unwrap_pydantic_serialization_iterators(r)
-                            )
-                        else:
-                            payload = make_encodeable(r)
-                        self._events.send(PredictionOutput(payload=payload))
-                else:
-                    self._events.send(PredictionOutputType(multi=False))
-                    if PYDANTIC_V2:
-                        payload = make_encodeable(
-                            unwrap_pydantic_serialization_iterators(result)
-                        )
-                    else:
-                        payload = make_encodeable(result)
-                    self._events.send(PredictionOutput(payload=payload))
+            yield
+        # regular cancelation
         except CancelationException:
             done.canceled = True
+        # async cancelation
+        except asyncio.CancelledError:
+            done.canceled = True
+            # We've handled the requested cancelation, so we uncancel the task.
+            # This ensures that any cleanup work we do won't be interrupted.
+            task = asyncio.current_task()
+            assert task
+            task.uncancel()
+        # [cb] A PredictorInputError is the caller's mistake, not a bug, so it
+        # is deliberately NOT reported to Sentry. Every other error is.
         except PredictorInputError as e:
             done.error = True
             done.error_detail = e.message
             done.error_type = e.error_type
             done.http_status_code = e.http_status_code
         except PredictorBaseError as e:
-            capture_exception(e)  # Cpaturing exception with sentry
+            capture_exception(e)  # Capturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = e.message
             done.error_type = e.error_type
             done.http_status_code = e.http_status_code
-        except Exception as e:
-            capture_exception(e)  # Cpaturing exception with sentry
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            capture_exception(e)  # Capturing exception with sentry
             traceback.print_exc()
             done.error = True
             done.error_detail = str(e)
@@ -422,14 +955,18 @@ class ChildWorker(_spawn.Process):  # type: ignore
                 redirector.drain(timeout=10)
             except TimeoutError:
                 self._events.send(
-                    Log(
-                        "WARNING: logs may be truncated due to excessive volume.",
-                        source="stderr",
+                    Envelope(
+                        event=Log(
+                            "WARNING: logs may be truncated due to excessive volume.",
+                            source="stderr",
+                        ),
+                        tag=tag,
                     )
                 )
                 raise
             if send_done:
-                self._events.send(done)
+                self._events.send(Envelope(event=done, tag=tag))
+            self._sync_tag = None
 
     def _signal_handler(
         self,
@@ -440,24 +977,85 @@ class ChildWorker(_spawn.Process):  # type: ignore
             raise CancelationException()
 
     def _stream_write_hook(self, stream_name: str, data: str) -> None:
+        if len(data) == 0:
+            return
+
         if stream_name == sys.stdout.name:
-            self._events.send(Log(data, source="stdout"))
+            self._events.send(
+                Envelope(event=Log(data, source="stdout"), tag=self._current_tag)
+            )
         else:
-            self._events.send(Log(data, source="stderr"))
+            self._events.send(
+                Envelope(event=Log(data, source="stderr"), tag=self._current_tag)
+            )
 
 
-def make_worker(predictor_ref: str, tee_output: bool = True) -> Worker:
+def _run_healthcheck_loop(
+    events: Connection,
+    predictor: BasePredictor,
+) -> None:
+    while True:
+        try:
+            if not events.poll(1.0):
+                continue
+            envelope = cast(Envelope, events.recv())
+        except (EOFError, OSError):
+            break
+
+        if not isinstance(envelope.event, Healthcheck):
+            continue
+
+        done = Done()
+        try:
+            healthcheck_fn = get_healthcheck(predictor)
+            if healthcheck_fn is not None:
+                result = healthcheck_fn()
+                if inspect.iscoroutine(result):
+                    result = asyncio.run(result)
+                if not bool(result):
+                    done.error = True
+                    done.error_detail = (
+                        "Healthcheck failed: user-defined healthcheck returned False"
+                    )
+        except Exception as exc:
+            done.error = True
+            done.error_detail = f"Healthcheck failed: {str(exc)}"
+
+        try:
+            events.send(Envelope(event=done, tag=envelope.tag))
+        except (EOFError, OSError):
+            break
+
+
+def make_worker(
+    predictor_ref: str,
+    *,
+    is_async: bool,
+    is_train: bool,
+    tee_output: bool = True,
+    max_concurrency: int = 1,
+    has_user_healthcheck: bool = False,
+) -> Worker:
     parent_conn, child_conn = _spawn.Pipe()
-    child = ChildWorker(predictor_ref, events=child_conn, tee_output=tee_output)
-    parent = Worker(child=child, events=parent_conn)
+
+    hc_parent: Optional[Connection] = None
+    hc_child: Optional[Connection] = None
+    if has_user_healthcheck:
+        hc_parent, hc_child = _spawn.Pipe()
+
+    child = _ChildWorker(
+        predictor_ref,
+        is_async=is_async,
+        is_train=is_train,
+        events=child_conn,
+        healthcheck_events=hc_child,
+        tee_output=tee_output,
+        max_concurrency=max_concurrency,
+    )
+    parent = Worker(
+        child=child,
+        events=parent_conn,
+        max_concurrency=max_concurrency,
+        healthcheck_events=hc_parent,
+    )
     return parent
-
-
-def _prepare_payload(payload: Dict[str, Any]) -> None:
-    for k, v in payload.items():
-        # Check if v is an instance of URLPath
-        if isinstance(v, URLPath):
-            payload[k] = v.convert()
-        # Check if v is a list of URLPath instances
-        elif isinstance(v, list) and all(isinstance(item, URLPath) for item in v):
-            payload[k] = [item.convert() for item in v]

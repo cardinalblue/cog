@@ -54,7 +54,7 @@ class PredictionBaseModel(pydantic.BaseModel):
 if PYDANTIC_V2:
     from pydantic.networks import UrlConstraints
     from pydantic_core import Url
-    from typing_extensions import Annotated
+    from typing_extensions import Annotated  # added to typing in python 3.9
 
     WebhookUrl = Annotated[
         Url, UrlConstraints(allowed_schemes=["http", "https"], max_length=65536)
@@ -67,6 +67,7 @@ class PredictionRequest(PredictionBaseModel):
     input: Dict[str, Any]
     id: Optional[str] = None
     created_at: Optional[datetime] = None
+    context: Optional[Dict[str, str]] = None
 
     # TODO: deprecate this
     output_file_prefix: Optional[str] = None

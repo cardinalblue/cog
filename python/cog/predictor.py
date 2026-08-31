@@ -2,35 +2,31 @@ import builtins
 import enum
 import importlib.util
 import inspect
-import io
 import os.path
 import sys
 import types
 import uuid
 from collections.abc import Iterable, Iterator
-from pathlib import Path
+
+if sys.version_info >= (3, 10):
+    from types import NoneType
 from typing import (
     Any,
     Callable,
     Dict,
     List,
+    Literal,
     Optional,
     Type,
     Union,
     cast,
+    get_args,
+    get_origin,
 )
-
-try:
-    from typing import Literal, get_args, get_origin
-except ImportError:  # Python < 3.8
-    from typing_compat import get_args, get_origin  # type: ignore
-    from typing_extensions import Literal
-
 from unittest.mock import patch
 
 import pydantic
 import structlog
-import yaml
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
@@ -40,11 +36,10 @@ from typing_extensions import Annotated
 from .base_input import BaseInput
 from .base_predictor import BasePredictor
 from .code_xforms import load_module_from_string, strip_model_source_code
-from .errors import ConfigDoesNotExist, PredictorNotSet
 from .types import (
     PYDANTIC_V2,
-    CogConfig,
     Input,
+    Weights,
 )
 from .types import (
     File as CogFile,
@@ -53,6 +48,11 @@ from .types import (
     Path as CogPath,
 )
 from .types import Secret as CogSecret
+
+if PYDANTIC_V2:
+    from pydantic.fields import PydanticUndefined  # type: ignore
+else:
+    from pydantic.fields import Undefined as PydanticUndefined
 
 log = structlog.get_logger("cog.server.predictor")
 
@@ -72,15 +72,16 @@ NOT_ALLOWED_INPUT_TYPES: List[Type[Any]] = [
 ]
 
 
-def run_setup(predictor: BasePredictor) -> None:
+def has_setup_weights(predictor: BasePredictor) -> bool:
     weights_type = get_weights_type(predictor.setup)
+    return weights_type is not None
 
-    # No weights need to be passed, so just run setup() without any arguments.
-    if weights_type is None:
-        predictor.setup()
-        return
 
-    weights: Union[io.IOBase, Path, str, None]
+def extract_setup_weights(predictor: BasePredictor) -> Optional[Weights]:
+    weights_type = get_weights_type(predictor.setup)
+    assert weights_type
+
+    weights: Optional[Weights]
 
     weights_url = os.environ.get("COG_WEIGHTS")
     weights_path = "weights"
@@ -131,7 +132,7 @@ def run_setup(predictor: BasePredictor) -> None:
     else:
         weights = None
 
-    predictor.setup(weights=weights)  # type: ignore
+    return weights
 
 
 def get_weights_type(setup_function: Callable[[Any], None]) -> Optional[Any]:
@@ -145,43 +146,6 @@ def get_weights_type(setup_function: Callable[[Any], None]) -> Optional[Any]:
         if len(args) == 2 and args[1] is type(None):
             Type = get_args(Type)[0]  # pylint: disable=invalid-name
     return Type
-
-
-def load_config() -> CogConfig:
-    """
-    Reads cog.yaml and returns it as a typed dict.
-    """
-    # Assumes the working directory is /src
-    config_path = os.path.abspath("cog.yaml")
-    try:
-        with open(config_path, encoding="utf-8") as fh:
-            config = yaml.safe_load(fh)
-    except FileNotFoundError as e:
-        raise ConfigDoesNotExist(
-            f"Could not find {config_path}",
-        ) from e
-    return config
-
-
-def load_predictor(config: CogConfig) -> BasePredictor:
-    """
-    Constructs an instance of the user-defined Predictor class from a config.
-    """
-
-    ref = get_predictor_ref(config)
-    return load_predictor_from_ref(ref)
-
-
-def get_predictor_ref(config: CogConfig, mode: str = "predict") -> str:
-    if mode not in ["predict", "train"]:
-        raise ValueError(f"Invalid mode: {mode}")
-
-    if mode not in config:
-        raise PredictorNotSet(
-            f"Can't run predictions: '{mode}' option not found in cog.yaml"
-        )
-
-    return config[mode]
 
 
 def load_full_predictor_from_file(
@@ -216,27 +180,6 @@ def get_predictor(module: types.ModuleType, class_name: str) -> Any:
     return predictor
 
 
-def load_slim_predictor_from_ref(ref: str, method_name: str) -> BasePredictor:
-    module_path, class_name = ref.split(":", 1)
-    module_name = os.path.basename(module_path).split(".py", 1)[0]
-    module = None
-    try:
-        if sys.version_info >= (3, 9):
-            module = load_slim_predictor_from_file(module_path, class_name, method_name)
-            if not module:
-                log.debug(f"[{module_name}] fast loader returned None")
-        else:
-            log.debug(f"[{module_name}] cannot use fast loader as current Python <3.9")
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        log.debug(f"[{module_name}] fast loader failed: {e}")
-    finally:
-        if not module:
-            log.debug(f"[{module_name}] falling back to slow loader")
-            module = load_full_predictor_from_file(module_path, module_name)
-    predictor = get_predictor(module, class_name)
-    return predictor
-
-
 def load_predictor_from_ref(ref: str) -> BasePredictor:
     module_path, class_name = ref.split(":", 1)
     module_name = os.path.basename(module_path).split(".py", 1)[0]
@@ -245,7 +188,34 @@ def load_predictor_from_ref(ref: str) -> BasePredictor:
     return predictor
 
 
-def validate_input_type(type: Type[Any], name: str) -> None:
+def is_none(type_arg: Any) -> bool:
+    if sys.version_info >= (3, 10):
+        return type_arg is NoneType
+    return type_arg is None.__class__
+
+
+def is_union(type: Type[Any]) -> bool:
+    if get_origin(type) is Union:
+        return True
+    if hasattr(types, "UnionType") and get_origin(type) is types.UnionType:
+        return True
+    return False
+
+
+def is_optional(type: Type[Any]) -> bool:
+    args = get_args(type)
+    if len(args) != 2 or not is_union(type):
+        return False
+    return is_none(args[1])
+
+
+def validate_input_type(
+    type: Type[Any],  # pylint: disable=redefined-builtin
+    name: str,
+) -> None:
+    # [cb] This fork rejects an explicit deny-list (File/Path/Secret) rather
+    # than enforcing upstream's allow-list, so that predictors can take nested
+    # pydantic models and enums as parameters.
     if type in NOT_ALLOWED_INPUT_TYPES:
         raise TypeError(
             f"Unsupported input type {human_readable_type_name(type)} for parameter `{name}`. Unsupported types are: {readable_types_list(NOT_ALLOWED_INPUT_TYPES)}."
@@ -265,11 +235,13 @@ def validate_input_type(type: Type[Any], name: str) -> None:
         if get_origin(type) is Literal:
             for t in get_args(type):
                 validate_input_type(builtins.type(t), name)
-        elif get_origin(type) in (Union, List, list) or (
-            hasattr(types, "UnionType") and get_origin(type) is types.UnionType
-        ):  # noqa: E721
-            for t in get_args(type):
-                validate_input_type(t, name)
+        elif get_origin(type) in (Union, List, list) or is_union(type):  # noqa: E721
+            args = get_args(type)
+            if is_optional(type):
+                validate_input_type(args[0], name)
+            else:
+                for t in args:
+                    validate_input_type(t, name)
         else:
             if PYDANTIC_V2:
                 # Cog types are exported as `Annotated[Type, ...]`, but `type` is the inner type
@@ -278,12 +250,37 @@ def validate_input_type(type: Type[Any], name: str) -> None:
 
 
 def get_input_create_model_kwargs(signature: inspect.Signature) -> Dict[str, Any]:
-    create_model_kwargs = {}
+    create_model_kwargs: Dict[str, Any] = {
+        "__base__": BaseInput,
+        "__config__": None,
+    }
 
     order = 0
 
     for name, parameter in signature.parameters.items():
         InputType = parameter.annotation
+
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            raise TypeError(f"Unsupported variadic positional parameter *{name}.")
+
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            if order != 0:
+                raise TypeError(f"Unsupported variadic keyword parameter **{name}")
+
+            class ExtraKeywordInput(BaseInput):
+                if PYDANTIC_V2:
+                    model_config = pydantic.ConfigDict(extra="allow")
+                else:
+
+                    class Config:
+                        extra = "allow"
+
+            create_model_kwargs["__base__"] = ExtraKeywordInput
+            name = "__pydantic_extra__"
+            InputType = Dict[str, Any]
+
+            create_model_kwargs[name] = (InputType, Input())
+            continue
 
         validate_input_type(InputType, name)
 
@@ -294,15 +291,36 @@ def get_input_create_model_kwargs(signature: inspect.Signature) -> Dict[str, Any
             if not isinstance(parameter.default, FieldInfo):
                 default = Input(default=parameter.default)
             else:
+                if is_optional(InputType):
+                    # If we are an optional, make sure the default is None
+                    if (
+                        parameter.default.default is PydanticUndefined
+                        or parameter.default.default is ...
+                    ):
+                        parameter.default.default = None
+                        if not PYDANTIC_V2:
+                            parameter.default.default_factory = None
                 default = parameter.default
 
+        extra: Dict[str, Any] = {}
         if PYDANTIC_V2:
             # https://github.com/pydantic/pydantic/blob/2.7/pydantic/json_schema.py#L1436-L1446
             # json_schema_extra can be a callable, but we don't set that and users shouldn't set that
             if not default.json_schema_extra:  # type: ignore
-                default.json_schema_extra = {}  # type: ignore
+                default.json_schema_extra = {"x-order": order}  # type: ignore
             assert isinstance(default.json_schema_extra, dict)  # type: ignore
-            extra = default.json_schema_extra  # type: ignore
+            # In Pydantic 2.12.0 the json_schema_extra field is copied into a variable called "_attributes_set"
+            # that gets created in the constructor.
+            # This means that changes to that dictionary after the construction don't take effect during the render
+            # to openapi schema JSON.
+            # To get around this, we will reference the dictionary in the attributes_set variable and make changes to
+            # json_schema_extra take effect.
+            if hasattr(default, "_attributes_set"):
+                if "json_schema_extra" not in default._attributes_set:  # type: ignore
+                    default._attributes_set["json_schema_extra"] = {"x-order": order}
+                extra = default._attributes_set["json_schema_extra"]  # type: ignore
+            else:
+                extra = default.json_schema_extra  # type: ignore
         else:
             extra = default.extra  # type: ignore
         extra["x-order"] = order
@@ -361,8 +379,6 @@ def get_input_type(predictor: BasePredictor) -> Type[BaseInput]:
 
     return create_model(
         "Input",
-        __config__=None,
-        __base__=BaseInput,
         __module__=__name__,
         __validators__=None,
         **get_input_create_model_kwargs(signature),
@@ -449,6 +465,17 @@ def get_train(predictor: Any) -> Callable[..., Any]:
     return predictor
 
 
+def get_healthcheck(predictor: Any) -> Optional[Callable[..., Any]]:
+    """Get the healthcheck method if it exists."""
+    fn = getattr(predictor, "healthcheck", None)
+    return fn if callable(fn) else None
+
+
+def has_user_healthcheck(predictor: Any) -> bool:
+    """Return True if the predictor defines a healthcheck method."""
+    return callable(getattr(predictor, "healthcheck", None))
+
+
 def get_training_input_type(predictor: BasePredictor) -> Type[BaseInput]:
     """
     Creates a Pydantic Input model from the arguments of a Predictor's train() method.
@@ -467,8 +494,6 @@ def get_training_input_type(predictor: BasePredictor) -> Type[BaseInput]:
 
     return create_model(
         "TrainingInput",
-        __config__=None,
-        __base__=BaseInput,
         __module__=__name__,
         __validators__=None,
         **get_input_create_model_kwargs(signature),

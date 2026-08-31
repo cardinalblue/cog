@@ -8,8 +8,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/replicate/cog/pkg/coglog"
 	"github.com/replicate/cog/pkg/config"
+	"github.com/replicate/cog/pkg/docker"
+	"github.com/replicate/cog/pkg/http"
 	"github.com/replicate/cog/pkg/image"
+	"github.com/replicate/cog/pkg/registry"
 	"github.com/replicate/cog/pkg/util/console"
 )
 
@@ -24,6 +28,9 @@ var buildDockerfileFile string
 var buildUseCogBaseImage bool
 var buildStrip bool
 var buildPrecompile bool
+var buildFast bool
+var buildLocalImage bool
+var configFilename string
 
 const useCogBaseImageFlagKey = "use-cog-base-image"
 
@@ -46,14 +53,42 @@ func newBuildCommand() *cobra.Command {
 	addBuildTimestampFlag(cmd)
 	addStripFlag(cmd)
 	addPrecompileFlag(cmd)
+	addFastFlag(cmd)
+	addLocalImage(cmd)
+	addConfigFlag(cmd)
+	addPipelineImage(cmd)
 	cmd.Flags().StringVarP(&buildTag, "tag", "t", "", "A name for the built image in the form 'repository:tag'")
 	return cmd
 }
 
 func buildCommand(cmd *cobra.Command, args []string) error {
-	cfg, projectDir, err := config.GetConfig(projectDirFlag)
+	ctx := cmd.Context()
+
+	dockerClient, err := docker.NewClient(ctx)
 	if err != nil {
 		return err
+	}
+
+	client, err := http.ProvideHTTPClient(ctx, dockerClient)
+	if err != nil {
+		return err
+	}
+	logClient := coglog.NewClient(client)
+	logCtx := logClient.StartBuild(buildLocalImage)
+
+	cfg, projectDir, err := config.GetConfig(configFilename)
+	if err != nil {
+		logClient.EndBuild(ctx, err, logCtx)
+		return err
+	}
+	// In case one of `--x-fast` & `fast: bool` is set
+	if cfg.Build.Fast {
+		buildFast = cfg.Build.Fast
+	}
+	logCtx.Fast = buildFast
+	logCtx.CogRuntime = false
+	if cfg.Build.CogRuntime != nil {
+		logCtx.CogRuntime = *cfg.Build.CogRuntime
 	}
 
 	imageName := cfg.Image
@@ -64,26 +99,52 @@ func buildCommand(cmd *cobra.Command, args []string) error {
 		imageName = config.DockerImageName(projectDir)
 	}
 
-	err = config.ValidateModelPythonVersion(cfg.Build.PythonVersion)
+	err = config.ValidateModelPythonVersion(cfg)
 	if err != nil {
+		logClient.EndBuild(ctx, err, logCtx)
 		return err
 	}
-
-	if err := image.Build(cfg, projectDir, imageName, buildSecrets, buildNoCache, buildSeparateWeights, buildUseCudaBaseImage, buildProgressOutput, buildSchemaFile, buildDockerfileFile, DetermineUseCogBaseImage(cmd), buildStrip, buildPrecompile); err != nil {
+	registryClient := registry.NewRegistryClient()
+	if err := image.Build(
+		ctx,
+		cfg,
+		projectDir,
+		imageName,
+		buildSecrets,
+		buildNoCache,
+		buildSeparateWeights,
+		buildUseCudaBaseImage,
+		buildProgressOutput,
+		buildSchemaFile,
+		buildDockerfileFile,
+		DetermineUseCogBaseImage(cmd),
+		buildStrip,
+		buildPrecompile,
+		buildFast,
+		nil,
+		buildLocalImage,
+		dockerClient,
+		registryClient,
+		pipelinesImage); err != nil {
+		logClient.EndBuild(ctx, err, logCtx)
 		return err
 	}
 
 	console.Infof("\nImage built as %s", imageName)
+	logClient.EndBuild(ctx, nil, logCtx)
 
 	return nil
 }
 
 func addBuildProgressOutputFlag(cmd *cobra.Command) {
-	defaultOutput := "auto"
-	if os.Getenv("TERM") == "dumb" {
-		defaultOutput = "plain"
+	defaultOutput := os.Getenv("BUILDKIT_PROGRESS")
+	if defaultOutput == "" {
+		defaultOutput = "auto"
+		if os.Getenv("TERM") == "dumb" {
+			defaultOutput = "plain"
+		}
 	}
-	cmd.Flags().StringVar(&buildProgressOutput, "progress", defaultOutput, "Set type of build progress output, 'auto' (default), 'tty' or 'plain'")
+	cmd.Flags().StringVar(&buildProgressOutput, "progress", defaultOutput, "Set type of build progress output, 'auto' (default), 'tty', 'plain', or 'quiet'")
 }
 
 func addSecretsFlag(cmd *cobra.Command) {
@@ -134,6 +195,22 @@ func addPrecompileFlag(cmd *cobra.Command) {
 	const precompileFlag = "precompile"
 	cmd.Flags().BoolVar(&buildPrecompile, precompileFlag, false, "Whether to precompile python files for faster load times")
 	_ = cmd.Flags().MarkHidden(precompileFlag)
+}
+
+func addFastFlag(cmd *cobra.Command) {
+	const fastFlag = "x-fast"
+	cmd.Flags().BoolVar(&buildFast, fastFlag, false, "Whether to use the experimental fast features")
+	_ = cmd.Flags().MarkHidden(fastFlag)
+}
+
+func addLocalImage(cmd *cobra.Command) {
+	const localImage = "x-localimage"
+	cmd.Flags().BoolVar(&buildLocalImage, localImage, false, "Whether to use the experimental local image features")
+	_ = cmd.Flags().MarkHidden(localImage)
+}
+
+func addConfigFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVarP(&configFilename, "file", "f", "cog.yaml", "The name of the config file.")
 }
 
 func checkMutuallyExclusiveFlags(cmd *cobra.Command, args []string) error {
