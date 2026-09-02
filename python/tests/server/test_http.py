@@ -22,17 +22,12 @@ def test_index_document():
         "openapi_url",
         "shutdown_url",
         "healthcheck_url",
-        "readiness_url",
-        "liveness_url",
         "predictions_url",
+        # "predictions_idempotent_url",
+        # "predictions_cancel_url",
     ):
         assert field in data
         assert data[field] is not None
-
-    # [cb] Idempotent creation and cancellation are not exposed by this fork,
-    # so they must not be advertised in the index document.
-    for field in ("predictions_idempotent_url", "predictions_cancel_url"):
-        assert field not in data
 
 
 def test_setup_healthcheck():

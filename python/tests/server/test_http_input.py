@@ -329,9 +329,6 @@ def test_untyped_inputs():
     )
 
 
-# [cb] This fork validates against a deny-list, not upstream's allow-list, so
-# an arbitrary unsupported annotation no longer fails setup. See
-# test_cb_unsupported_input_cog_file_and_path for the types we do reject.
 # def test_input_with_unsupported_type():
 #     config = {"predict": _fixture_path("input_unsupported_type")}
 #     app = create_app(
@@ -341,9 +338,8 @@ def test_untyped_inputs():
 #     )
 #     assert app.state.health == Health.SETUP_FAILED
 #     assert app.state.setup_result.status == schema.Status.FAILED
-#     assert (
-#         "TypeError: Unsupported input type input_unsupported_type"
-#         in app.state.setup_result.logs
+#     assert "TypeError: Unsupported input type input_unsupported_type" in "".join(
+#         app.state.setup_result.logs
 #     )
 
 
@@ -379,10 +375,6 @@ def test_cb_complex_input(client):
         "/predictions", json={"instances": [{"list_testest_dictt_dict": test_dict}]}
     )
     assert resp.status_code == 422
-
-
-# [cb] upstream's test_path_or_none is omitted: Path inputs are unsupported in
-# this fork.
 
 
 def test_cb_unsupported_input_cog_file_and_path():

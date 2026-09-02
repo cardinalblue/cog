@@ -39,9 +39,6 @@ from ..logging import setup_logging
 from ..mode import Mode
 from ..types import PYDANTIC_V2
 
-# [cb] `..files.upload_file` / `..json.upload_files` are intentionally NOT
-# imported: file upload is disabled in this fork (see json.upload_files).
-
 try:
     from .._version import __version__
 except ImportError:
@@ -264,9 +261,9 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         "openapi_url": "/openapi.json",
         "shutdown_url": "/shutdown",
         "healthcheck_url": "/health-check",
-        "readiness_url": "/health/ready",
-        "liveness_url": "/health/live",
         "predictions_url": "/predictions",
+        # "predictions_idempotent_url": "/predictions/{prediction_id}",
+        # "predictions_cancel_url": "/predictions/{prediction_id}/cancel",
     }
 
     @app.get("/")
@@ -547,16 +544,10 @@ def _cpu_count() -> int:
 
 
 if __name__ == "__main__":
-    # [cb] Upstream v0.16.10 added an opt-in delegation to the Rust coglet
-    # server here: it tried `import coglet` and, when that succeeded, handed the
-    # whole process to `coglet.serve()` and exited.
-    #
-    # That is removed in this fork on purpose. The Rust server implements
-    # upstream's API, not ours -- delegating to it would silently drop the
-    # `instances`/`predictions` batch API, Sentry reporting, the /health/ready
-    # and /health/live probes, and the 400-vs-500 error semantics, while still
-    # starting up and answering requests as if nothing were wrong. The fork must
-    # always serve its own Python app, so there is no coglet branch at all.
+    # CB: Upstream v0.16.10 added an opt-in delegation to the Rust coglet server here: it tried `import coglet` and, when that succeeded, handed the whole process to `coglet.serve()` and exited.
+    # That is removed in this fork on purpose.
+    # The Rust server implements upstream's API, not ours -- delegating to it would silently drop the `instances`/`predictions` batch API, Sentry reporting, the /health/ready and /health/live probes, and the 400-vs-500 error semantics, while still starting up and answering requests as if nothing were wrong.
+    # The fork must always serve its own Python app, so there is no coglet branch at all.
     parser = argparse.ArgumentParser(description="Cog HTTP server")
     parser.add_argument(
         "-v", "--version", action="store_true", help="Show version and exit"

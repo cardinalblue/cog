@@ -406,15 +406,16 @@ else:
                 model = getattr(dep, "type_", None)
                 if not is_pydantic_model_type(model):
                     continue
-                input_model_union = get_annotations(model).get("input")
-                if input_model_union is None:
+                input_model_list = get_annotations(model).get("instances")
+                if input_model_list is None:
                     continue
-                input_model = get_args(input_model_union)[0]
+                input_model = get_args(input_model_list)[0]
                 schema_node = openapi_schema["components"]["schemas"].get(
                     model.__name__
                 )
                 referenced_schema = fetch_referenced_schema(
-                    openapi_schema, schema_node["properties"]["input"]["$ref"]
+                    openapi_schema,
+                    schema_node["properties"]["instances"]["items"]["$ref"],
                 )
                 for k, v in referenced_schema["properties"].items():
                     annotated_type = get_annotations(input_model)[k]
@@ -423,10 +424,10 @@ else:
 
             response_model = getattr(route, "response_model", None)
             if is_pydantic_model_type(response_model):
-                output_model_union = get_annotations(response_model).get("output")
-                if output_model_union is None:
+                output_model_list = get_annotations(response_model).get("predictions")
+                if output_model_list is None:
                     continue
-                output_model = get_args(output_model_union)[0]
+                output_model = get_args(output_model_list)[0]
                 schema_node = openapi_schema["components"]["schemas"].get(
                     output_model.__name__
                 )

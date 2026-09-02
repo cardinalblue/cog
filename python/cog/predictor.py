@@ -213,9 +213,6 @@ def validate_input_type(
     type: Type[Any],  # pylint: disable=redefined-builtin
     name: str,
 ) -> None:
-    # [cb] This fork rejects an explicit deny-list (File/Path/Secret) rather
-    # than enforcing upstream's allow-list, so that predictors can take nested
-    # pydantic models and enums as parameters.
     if type in NOT_ALLOWED_INPUT_TYPES:
         raise TypeError(
             f"Unsupported input type {human_readable_type_name(type)} for parameter `{name}`. Unsupported types are: {readable_types_list(NOT_ALLOWED_INPUT_TYPES)}."

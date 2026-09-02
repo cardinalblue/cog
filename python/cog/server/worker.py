@@ -854,8 +854,6 @@ class _ChildWorker(_spawn.Process):  # type: ignore
         done = Done()
         try:
             yield
-        # [cb] A PredictorInputError is the caller's mistake, not a bug, so it
-        # is deliberately NOT reported to Sentry. Every other error is.
         except PredictorInputError as e:
             done.error = True
             done.error_detail = e.message
@@ -921,8 +919,6 @@ class _ChildWorker(_spawn.Process):  # type: ignore
             task = asyncio.current_task()
             assert task
             task.uncancel()
-        # [cb] A PredictorInputError is the caller's mistake, not a bug, so it
-        # is deliberately NOT reported to Sentry. Every other error is.
         except PredictorInputError as e:
             done.error = True
             done.error_detail = e.message

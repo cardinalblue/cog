@@ -65,10 +65,6 @@ def upload_files(obj: Any, upload_file: Callable[[io.IOBase], str]) -> Any:
         return {key: upload_files(value, upload_file) for key, value in obj.items()}
     if isinstance(obj, list):
         return [upload_files(value, upload_file) for value in obj]
-    # [cb] File upload is disabled in this fork: inputs and outputs always
-    # travel as JSON (a URL or base64 payload we pass ourselves), so we never
-    # hand files to Replicate's file CDN. Keep in sync with upstream if the
-    # upload path is ever re-enabled.
     # if isinstance(obj, os.PathLike):
     #     with open(obj, "rb") as f:
     #         return upload_file(f)
