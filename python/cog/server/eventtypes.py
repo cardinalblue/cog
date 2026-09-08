@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from attrs import define, field, validators
 
@@ -6,12 +6,23 @@ from attrs import define, field, validators
 # From worker parent process
 #
 @define
+class Cancel:
+    pass
+
+
+@define
 class PredictionInput:
     payload: Dict[str, Any]
+    context: Dict[str, str] = {}
 
 
 @define
 class Shutdown:
+    pass
+
+
+@define
+class Healthcheck:
     pass
 
 
@@ -21,6 +32,12 @@ class Shutdown:
 class Log:
     message: str
     source: str = field(validator=validators.in_(["stdout", "stderr"]))
+
+
+@define
+class PredictionMetric:
+    name: str
+    value: Union[float, int]
 
 
 @define
@@ -40,3 +57,24 @@ class Done:
     error_detail: str = ""
     error_type: Optional[str] = None
     http_status_code: Optional[int] = None
+
+
+@define
+class Envelope:
+    """
+    Envelope contains an arbitrary event along with an optional tag used to
+    tangle/untangle concurrent work.
+    """
+
+    event: Union[
+        Cancel,
+        PredictionInput,
+        Shutdown,
+        Healthcheck,
+        Log,
+        PredictionMetric,
+        PredictionOutput,
+        PredictionOutputType,
+        Done,
+    ]
+    tag: Optional[str] = None

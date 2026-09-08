@@ -1,26 +1,26 @@
-from abc import ABC, abstractmethod
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
-from .types import (
-    File as CogFile,
-)
-from .types import (
-    Path as CogPath,
-)
+from .types import Weights
 
 
-class BasePredictor(ABC):
+class BasePredictor:
     def setup(
         self,
-        weights: Optional[Union[CogFile, CogPath, str]] = None,  # pylint: disable=unused-argument
+        weights: Optional[Weights] = None,  # pylint: disable=unused-argument
     ) -> None:
         """
         An optional method to prepare the model so multiple predictions run efficiently.
         """
         return
 
-    @abstractmethod
     def predict(self, **kwargs: Any) -> Any:
         """
         Run a single prediction on the model
         """
+        raise NotImplementedError("predict has not been implemented by parent class.")
+
+    def train(self, **kwargs: Any) -> Any:
+        """
+        Run a single train on the model
+        """
+        raise NotImplementedError("train has not been implemented by parent class.")

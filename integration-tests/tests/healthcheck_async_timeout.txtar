@@ -1,0 +1,46 @@
+# Skip for coglet_alpha which does not support this
+[coglet_alpha] skip
+# Skip for coglet_rust which does not support this
+[coglet_rust] skip
+# Skip for cog-dataclass which does not support this
+[cog_dataclass] skip
+
+# Test async healthcheck that times out
+# Ensures timeout works for async healthcheck functions
+
+# Build the image
+cog build -t $TEST_IMAGE
+
+# Start the server
+cog serve
+
+# Async healthcheck should timeout (sleeps 10s, timeout is 5s)
+curl GET /health-check
+stdout '"status":"UNHEALTHY"'
+stdout 'timed out after 5'
+
+-- cog.yaml --
+build:
+  python_version: "3.12"
+predict: "predict.py:Predictor"
+
+-- predict.py --
+import asyncio
+from cog import BasePredictor
+
+class Predictor(BasePredictor):
+    def setup(self) -> None:
+        self._healthcheck_calls = 0
+
+    def predict(self, text: str) -> str:
+        return f"hello {text}"
+
+    async def healthcheck(self) -> bool:
+        """Async healthcheck that times out after first call."""
+        self._healthcheck_calls += 1
+        if self._healthcheck_calls == 1:
+            # First call succeeds so server becomes ready
+            return True
+        # Subsequent calls timeout
+        await asyncio.sleep(10)  # Exceeds 5s timeout
+        return True

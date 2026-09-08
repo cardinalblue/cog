@@ -25,7 +25,7 @@ type VerifyResponse struct {
 }
 
 func newLoginCommand() *cobra.Command {
-	var cmd = &cobra.Command{
+	cmd := &cobra.Command{
 		Use:        "login",
 		SuggestFor: []string{"auth", "authenticate", "authorize"},
 		Short:      "Log in to Replicate Docker registry",
@@ -34,17 +34,15 @@ func newLoginCommand() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("token-stdin", false, "Pass login token on stdin instead of opening a browser. You can find your Replicate login token at https://replicate.com/auth/token")
-	cmd.Flags().String("registry", global.ReplicateRegistryHost, "Registry host")
-	_ = cmd.Flags().MarkHidden("registry")
 
 	return cmd
 }
 
 func login(cmd *cobra.Command, args []string) error {
-	registryHost, err := cmd.Flags().GetString("registry")
-	if err != nil {
-		return err
-	}
+	ctx := cmd.Context()
+
+	// Use global registry host (can be set via --registry flag or COG_REGISTRY_HOST env var)
+	registryHost := global.ReplicateRegistryHost
 	tokenStdin, err := cmd.Flags().GetBool("token-stdin")
 	if err != nil {
 		return err
@@ -73,7 +71,7 @@ func login(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := docker.SaveLoginToken(registryHost, username, token); err != nil {
+	if err := docker.SaveLoginToken(ctx, registryHost, username, token); err != nil {
 		return err
 	}
 
@@ -171,6 +169,10 @@ func checkTokenFormat(token string) error {
 }
 
 func verifyToken(registryHost string, token string) (username string, err error) {
+	if token == "" {
+		return "", fmt.Errorf("Token is empty")
+	}
+
 	resp, err := http.PostForm(addressWithScheme(registryHost)+"/cog/v1/verify-token", url.Values{
 		"token": []string{token},
 	})

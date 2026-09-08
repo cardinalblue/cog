@@ -4,12 +4,14 @@ import (
 	// blank import for embeds
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"golang.org/x/exp/slices"
 
+	"github.com/replicate/cog/pkg/requirements"
 	"github.com/replicate/cog/pkg/util"
 	"github.com/replicate/cog/pkg/util/console"
 
@@ -80,17 +82,14 @@ func (i *CUDABaseImage) ImageTag() string {
 	return "nvidia/cuda:" + i.Tag
 }
 
-//go:generate go run ../../tools/compatgen/main.go cuda -o cuda_base_images.json
 //go:embed cuda_base_images.json
 var cudaBaseImagesData []byte
 var CUDABaseImages []CUDABaseImage
 
-//go:generate go run ../../tools/compatgen/main.go tensorflow -o tf_compatibility_matrix.json
 //go:embed tf_compatibility_matrix.json
 var tfCompatibilityMatrixData []byte
 var TFCompatibilityMatrix []TFCompatibility
 
-//go:generate go run ../../tools/compatgen/main.go torch -o torch_compatibility_matrix.json
 //go:embed torch_compatibility_matrix.json
 var torchCompatibilityMatrixData []byte
 var TorchCompatibilityMatrix []TorchCompatibility
@@ -153,6 +152,11 @@ func cudaVersionFromTorchPlusVersion(ver string) (string, string) {
 }
 
 func cudasFromTorch(ver string) ([]string, error) {
+	if ver == "" {
+		return nil, errors.New(
+			"torch version must be specified when using CUDA",
+		)
+	}
 	cudas := []string{}
 
 	// Check the version modifier on torch (such as +cu118)
@@ -260,7 +264,7 @@ func CUDABaseImageFor(cuda string, cuDNN string) (string, error) {
 		}
 	}
 	if len(images) == 0 {
-		return "", fmt.Errorf("No matching base image for CUDA %s and CuDNN %s", cuda, cuDNN)
+		return "", fmt.Errorf("no matching base image for CUDA %s and CuDNN %s", cuda, cuDNN)
 	}
 
 	sort.Slice(images, func(i, j int) bool {
@@ -276,7 +280,7 @@ func CUDABaseImageFor(cuda string, cuDNN string) (string, error) {
 func tfGPUPackage(ver string, cuda string) (name string, cpuVersion string, err error) {
 	for _, compat := range TFCompatibilityMatrix {
 		if compat.TF == ver && version.Equal(compat.CUDA, cuda) {
-			name, cpuVersion, _, _, err = splitPinnedPythonRequirement(compat.TFGPUPackage)
+			name, cpuVersion, _, _, err = requirements.SplitPinnedPythonRequirement(compat.TFGPUPackage)
 			return name, cpuVersion, err
 		}
 	}

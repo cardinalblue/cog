@@ -10,12 +10,14 @@ nav:
   - Prediction API: python.md
   - Training API: training.md
   - HTTP API: http.md
+  - CLI: cli.md
   - Environment variables: environment.md
   - Private registry: private-package-registry.md
   - Notebooks: notebooks.md
   - Windows: wsl2/wsl2.md
   - Contributing: CONTRIBUTING.md
   - License: https://github.com/replicate/cog/blob/main/LICENSE
+  - llms.txt: llms.txt
 
 theme:
   name: material
@@ -43,7 +45,7 @@ theme:
     # Palette toggle for dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: green
+      primary: black
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode

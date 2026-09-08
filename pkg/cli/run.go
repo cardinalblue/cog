@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"runtime"
+	"os"
 	"strconv"
 	"strings"
 
@@ -9,8 +9,9 @@ import (
 
 	"github.com/replicate/cog/pkg/config"
 	"github.com/replicate/cog/pkg/docker"
+	"github.com/replicate/cog/pkg/docker/command"
 	"github.com/replicate/cog/pkg/image"
-	"github.com/replicate/cog/pkg/util"
+	"github.com/replicate/cog/pkg/registry"
 	"github.com/replicate/cog/pkg/util/console"
 )
 
@@ -36,9 +37,13 @@ func newRunCommand() *cobra.Command {
 	addUseCudaBaseImageFlag(cmd)
 	addUseCogBaseImageFlag(cmd)
 	addGpusFlag(cmd)
+	addFastFlag(cmd)
+	addLocalImage(cmd)
+	addConfigFlag(cmd)
+	addPipelineImage(cmd)
 
 	flags := cmd.Flags()
-	// Flags after first argment are considered args and passed to command
+	// Flags after first argument are considered args and passed to command
 
 	// This is called `publish` for consistency with `docker run`
 	cmd.Flags().StringArrayVarP(&runPorts, "publish", "p", []string{}, "Publish a container's port to the host, e.g. -p 8000")
@@ -50,13 +55,51 @@ func newRunCommand() *cobra.Command {
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	cfg, projectDir, err := config.GetConfig(projectDirFlag)
+	ctx := cmd.Context()
+
+	dockerClient, err := docker.NewClient(ctx)
 	if err != nil {
 		return err
 	}
-	imageName, err := image.BuildBase(cfg, projectDir, buildUseCudaBaseImage, DetermineUseCogBaseImage(cmd), buildProgressOutput)
+	client := registry.NewRegistryClient()
+
+	cfg, projectDir, err := config.GetConfig(configFilename)
 	if err != nil {
 		return err
+	}
+
+	var imageName string
+	if cfg.Build.Fast || buildFast || pipelinesImage {
+		imageName = config.DockerImageName(projectDir)
+		err = image.Build(
+			ctx,
+			cfg,
+			projectDir,
+			imageName,
+			buildSecrets,
+			buildNoCache,
+			buildSeparateWeights,
+			buildUseCudaBaseImage,
+			buildProgressOutput,
+			buildSchemaFile,
+			buildDockerfileFile,
+			DetermineUseCogBaseImage(cmd),
+			buildStrip,
+			buildPrecompile,
+			cfg.Build.Fast || buildFast,
+			nil,
+			buildLocalImage,
+			dockerClient,
+			client,
+			pipelinesImage)
+		if err != nil {
+			return err
+		}
+	} else {
+		imageName, err = image.BuildBase(ctx, dockerClient, cfg, projectDir, buildUseCudaBaseImage, DetermineUseCogBaseImage(cmd), buildProgressOutput, client, true)
+		if err != nil {
+			return err
+		}
 	}
 
 	gpus := ""
@@ -66,17 +109,23 @@ func run(cmd *cobra.Command, args []string) error {
 		gpus = "all"
 	}
 
-	runOptions := docker.RunOptions{
-		Args:    args,
-		Env:     envFlags,
-		GPUs:    gpus,
-		Image:   imageName,
-		Volumes: []docker.Volume{{Source: projectDir, Destination: "/src"}},
-		Workdir: "/src",
+	// Automatically propagate RUST_LOG for Rust coglet debugging
+	env := envFlags
+	if rustLog := os.Getenv("RUST_LOG"); rustLog != "" {
+		env = append(env, "RUST_LOG="+rustLog)
 	}
 
-	if util.IsAppleSiliconMac(runtime.GOOS, runtime.GOARCH) {
-		runOptions.Platform = "linux/amd64"
+	runOptions := command.RunOptions{
+		Args:    args,
+		Env:     env,
+		GPUs:    gpus,
+		Image:   imageName,
+		Volumes: []command.Volume{{Source: projectDir, Destination: "/src"}},
+		Workdir: "/src",
+	}
+	runOptions, err = docker.FillInWeightsManifestVolumes(ctx, dockerClient, runOptions)
+	if err != nil {
+		return err
 	}
 
 	for _, portString := range runPorts {
@@ -85,20 +134,20 @@ func run(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		runOptions.Ports = append(runOptions.Ports, docker.Port{HostPort: port, ContainerPort: port})
+		runOptions.Ports = append(runOptions.Ports, command.Port{HostPort: port, ContainerPort: port})
 	}
 
 	console.Info("")
 	console.Infof("Running '%s' in Docker with the current directory mounted as a volume...", strings.Join(args, " "))
 
-	err = docker.Run(runOptions)
+	err = docker.Run(ctx, dockerClient, runOptions)
 	// Only retry if we're using a GPU but but the user didn't explicitly select a GPU with --gpus
 	// If the user specified the wrong GPU, they are explicitly selecting a GPU and they'll want to hear about it
 	if runOptions.GPUs == "all" && err == docker.ErrMissingDeviceDriver {
 		console.Info("Missing device driver, re-trying without GPU")
 
 		runOptions.GPUs = ""
-		err = docker.Run(runOptions)
+		err = docker.Run(ctx, dockerClient, runOptions)
 	}
 
 	return err

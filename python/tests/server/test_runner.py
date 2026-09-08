@@ -2,6 +2,7 @@ import os
 import uuid
 from concurrent.futures import Future
 from datetime import datetime
+from typing import Any, Dict, Optional
 from unittest import mock
 
 import pytest
@@ -38,18 +39,24 @@ tick = mock.sentinel.tick
 class FakeWorker:
     def __init__(self):
         self.subscribers = {}
-        self.last_prediction_payload = None
+        self.subscribers_by_tag = {}
 
         self._setup_future = None
-        self._predict_future = None
+        self._predict_futures = {}
+        self.last_prediction_payload = None
+        self.last_prediction_context = None
 
-    def subscribe(self, subscriber):
+    def subscribe(self, subscriber, tag=None):
         sid = uuid.uuid4()
-        self.subscribers[sid] = subscriber
+        self.subscribers[sid] = tag
+        if tag not in self.subscribers_by_tag:
+            self.subscribers_by_tag[tag] = {}
+        self.subscribers_by_tag[tag][sid] = subscriber
         return sid
 
     def unsubscribe(self, sid):
-        del self.subscribers[sid]
+        tag = self.subscribers.pop(sid)
+        del self.subscribers_by_tag[tag][sid]
 
     def setup(self):
         assert self._setup_future is None
@@ -61,32 +68,45 @@ class FakeWorker:
             if isinstance(event, Exception):
                 self._setup_future.set_exception(event)
                 return
-            for subscriber in self.subscribers.values():
+            for subscriber in self.subscribers_by_tag.get(None, {}).values():
                 subscriber(event)
             if isinstance(event, Done):
                 self._setup_future.set_result(event)
 
-    def predict(self, payload):
-        assert self._predict_future is None or self._predict_future.done()
+    def predict(
+        self,
+        payload: Dict[str, Any],
+        tag: Optional[str] = None,
+        *,
+        context: Optional[Dict[str, str]] = None,
+    ):
+        assert tag not in self._predict_futures or self._predict_futures[tag].done()
         self.last_prediction_payload = payload
-        self._predict_future = Future()
-        return self._predict_future
+        self.last_prediction_context = context
+        self._predict_futures[tag] = Future()
+        print(f"setting {tag}, now {self._predict_futures}")
+        return self._predict_futures[tag]
 
-    def run_predict(self, events):
+    def run_predict(self, events, id=None):
+        if id is None:
+            if len(self._predict_futures) != 1:
+                raise ValueError("Could not guess prediction id, please specify")
+            id = next(iter(self._predict_futures))
         for event in events:
             if isinstance(event, Exception):
-                self._predict_future.set_exception(event)
+                self._predict_futures[id].set_exception(event)
                 return
-            for subscriber in self.subscribers.values():
+            for subscriber in self.subscribers_by_tag.get(id, {}).values():
                 subscriber(event)
             if isinstance(event, Done):
-                self._predict_future.set_result(event)
+                print(f"reading {id} from {self._predict_futures}")
+                self._predict_futures[id].set_result(event)
 
-    def cancel(self):
+    def cancel(self, tag=None):
         done = Done(canceled=True)
-        for subscriber in self.subscribers.values():
+        for subscriber in self.subscribers_by_tag.get(tag, {}).values():
             subscriber(done)
-        self._predict_future.set_result(done)
+        self._predict_futures[tag].set_result(done)
 
 
 def test_prediction_runner_setup_success():
@@ -135,7 +155,7 @@ def test_prediction_runner_predict_success():
     r.setup()
     w.run_setup([Done()])
 
-    task = r.predict(PredictionRequest(input={"text": "giraffes"}))
+    task = r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
     assert w.last_prediction_payload == {"text": "giraffes"}
     assert task.result.input == {"text": "giraffes"}
     assert task.result.status == Status.PROCESSING
@@ -154,7 +174,7 @@ def test_prediction_runner_predict_failure():
     r.setup()
     w.run_setup([Done()])
 
-    task = r.predict(PredictionRequest(input={"text": "giraffes"}))
+    task = r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
     assert w.last_prediction_payload == {"text": "giraffes"}
     assert task.result.input == {"text": "giraffes"}
     assert task.result.status == Status.PROCESSING
@@ -173,7 +193,7 @@ def test_prediction_runner_predict_exception():
     r.setup()
     w.run_setup([Done()])
 
-    task = r.predict(PredictionRequest(input={"text": "giraffes"}))
+    task = r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
     assert w.last_prediction_payload == {"text": "giraffes"}
     assert task.result.input == {"text": "giraffes"}
     assert task.result.status == Status.PROCESSING
@@ -198,7 +218,7 @@ def test_prediction_runner_predict_before_setup():
     r = PredictionRunner(worker=w)
 
     with pytest.raises(RunnerBusyError):
-        r.predict(PredictionRequest(input={"text": "giraffes"}))
+        r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
 
 
 def test_prediction_runner_predict_before_setup_completes():
@@ -208,7 +228,7 @@ def test_prediction_runner_predict_before_setup_completes():
     r.setup()
 
     with pytest.raises(RunnerBusyError):
-        r.predict(PredictionRequest(input={"text": "giraffes"}))
+        r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
 
 
 def test_prediction_runner_predict_before_predict_completes():
@@ -218,10 +238,10 @@ def test_prediction_runner_predict_before_predict_completes():
     r.setup()
     w.run_setup([Done()])
 
-    r.predict(PredictionRequest(input={"text": "giraffes"}))
+    r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
 
     with pytest.raises(RunnerBusyError):
-        r.predict(PredictionRequest(input={"text": "giraffes"}))
+        r.predict(PredictionRequest(input={"text": "giraffes"}), is_train=False)
 
 
 def test_prediction_runner_predict_after_predict_completes():
@@ -231,11 +251,11 @@ def test_prediction_runner_predict_after_predict_completes():
     r.setup()
     w.run_setup([Done()])
 
-    r.predict(PredictionRequest(input={"text": "giraffes"}))
-    w.run_predict([Done()])
+    r.predict(PredictionRequest(id="p-1", input={"text": "giraffes"}), is_train=False)
+    w.run_predict([Done()], id="p-1")
 
-    r.predict(PredictionRequest(input={"text": "elephants"}))
-    w.run_predict([Done()])
+    r.predict(PredictionRequest(id="p-2", input={"text": "elephants"}), is_train=False)
+    w.run_predict([Done()], id="p-2")
 
     assert w.last_prediction_payload == {"text": "elephants"}
 
@@ -252,10 +272,35 @@ def test_prediction_runner_is_busy():
     w.run_setup([Done()])
     assert not r.is_busy()
 
-    r.predict(PredictionRequest(input={"text": "elephants"}))
+    r.predict(PredictionRequest(input={"text": "elephants"}), is_train=False)
     assert r.is_busy()
 
     w.run_predict([Done()])
+    assert not r.is_busy()
+
+
+def test_prediction_runner_is_busy_concurrency():
+    w = FakeWorker()
+    r = PredictionRunner(worker=w, max_concurrency=3)
+
+    assert r.is_busy()
+
+    r.setup()
+    assert r.is_busy()
+
+    w.run_setup([Done()])
+    assert not r.is_busy()
+
+    r.predict(PredictionRequest(id="1", input={"text": "elephants"}), is_train=False)
+    assert not r.is_busy()
+
+    r.predict(PredictionRequest(id="2", input={"text": "elephants"}), is_train=False)
+    assert not r.is_busy()
+
+    r.predict(PredictionRequest(id="3", input={"text": "elephants"}), is_train=False)
+    assert r.is_busy()
+
+    w.run_predict([Done()], id="1")
     assert not r.is_busy()
 
 
@@ -266,7 +311,9 @@ def test_prediction_runner_predict_cancelation():
     r.setup()
     w.run_setup([Done()])
 
-    task = r.predict(PredictionRequest(id="abcd1234", input={"text": "giraffes"}))
+    task = r.predict(
+        PredictionRequest(id="abcd1234", input={"text": "giraffes"}), is_train=False
+    )
 
     with pytest.raises(ValueError):
         r.cancel(None)
@@ -289,10 +336,14 @@ def test_prediction_runner_predict_cancelation_multiple_predictions():
     r.setup()
     w.run_setup([Done()])
 
-    task1 = r.predict(PredictionRequest(id="abcd1234", input={"text": "giraffes"}))
+    task1 = r.predict(
+        PredictionRequest(id="abcd1234", input={"text": "giraffes"}), is_train=False
+    )
     w.run_predict([Done()])
 
-    task2 = r.predict(PredictionRequest(id="defg6789", input={"text": "elephants"}))
+    task2 = r.predict(
+        PredictionRequest(id="defg6789", input={"text": "elephants"}), is_train=False
+    )
     with pytest.raises(UnknownPredictionError):
         r.cancel("abcd1234")
 
@@ -301,8 +352,31 @@ def test_prediction_runner_predict_cancelation_multiple_predictions():
     assert task2.result.status == Status.CANCELED
 
 
+def test_prediction_runner_predict_cancelation_concurrent_predictions():
+    w = FakeWorker()
+    r = PredictionRunner(worker=w, max_concurrency=5)
+
+    r.setup()
+    w.run_setup([Done()])
+
+    task1 = r.predict(
+        PredictionRequest(id="abcd1234", input={"text": "giraffes"}), is_train=False
+    )
+
+    task2 = r.predict(
+        PredictionRequest(id="defg6789", input={"text": "elephants"}), is_train=False
+    )
+
+    r.cancel("abcd1234")
+    w.run_predict([Done()], id="defg6789")
+    assert task1.result.status == Status.CANCELED
+    assert task2.result.status == Status.SUCCEEDED
+
+
 def test_prediction_runner_setup_e2e():
-    w = make_worker(predictor_ref=_fixture_path("sleep"))
+    w = make_worker(
+        predictor_ref=_fixture_path("sleep"), is_async=False, is_train=False
+    )
     r = PredictionRunner(worker=w)
 
     try:
@@ -318,12 +392,14 @@ def test_prediction_runner_setup_e2e():
 
 
 def test_prediction_runner_predict_e2e():
-    w = make_worker(predictor_ref=_fixture_path("sleep"))
+    w = make_worker(
+        predictor_ref=_fixture_path("sleep"), is_async=False, is_train=False
+    )
     r = PredictionRunner(worker=w)
 
     try:
         r.setup().wait(timeout=5)
-        task = r.predict(PredictionRequest(input={"sleep": 0.1}))
+        task = r.predict(PredictionRequest(input={"sleep": 0.1}), is_train=False)
         task.wait(timeout=1)
     finally:
         w.shutdown()
@@ -396,7 +472,7 @@ def test_predict_task():
         output_file_prefix=None,
         webhook=None,
     )
-    t = PredictTask(p)
+    t = PredictTask(p, False)
 
     assert t.result.status == Status.PROCESSING
     assert t.result.output is None
@@ -416,7 +492,7 @@ def test_predict_task_multi():
         output_file_prefix=None,
         webhook=None,
     )
-    t = PredictTask(p)
+    t = PredictTask(p, False)
 
     assert t.result.status == Status.PROCESSING
     assert t.result.output is None
@@ -454,7 +530,7 @@ def test_predict_task_webhook_sender():
         output_file_prefix=None,
         webhook="https://a.url.honest",
     )
-    t = PredictTask(p)
+    t = PredictTask(p, False)
     t._webhook_sender = mock.Mock()
     t.track(Future())
 
@@ -492,7 +568,7 @@ def test_predict_task_webhook_sender_intermediate():
         output_file_prefix=None,
         webhook="https://a.url.honest",
     )
-    t = PredictTask(p)
+    t = PredictTask(p, False)
     t._webhook_sender = mock.Mock()
     t.track(Future())
 
@@ -514,7 +590,7 @@ def test_predict_task_webhook_sender_intermediate_multi():
         output_file_prefix=None,
         webhook="https://a.url.honest",
     )
-    t = PredictTask(p)
+    t = PredictTask(p, False)
     t._webhook_sender = mock.Mock()
     t.track(Future())
 
@@ -583,7 +659,7 @@ def test_predict_task_file_uploads():
         output_file_prefix=None,
         webhook=None,
     )
-    t = PredictTask(p, upload_url="https://a.url.honest")
+    t = PredictTask(p, False, upload_url="https://a.url.honest")
     t._file_uploader = mock.Mock()
 
     # in reality this would be a Path object, but in this test we just care it
@@ -605,7 +681,7 @@ def test_predict_task_file_uploads_multi():
         output_file_prefix=None,
         webhook=None,
     )
-    t = PredictTask(p, upload_url="https://a.url.honest")
+    t = PredictTask(p, False, upload_url="https://a.url.honest")
     t._file_uploader = mock.Mock()
 
     t._file_uploader.return_value = []

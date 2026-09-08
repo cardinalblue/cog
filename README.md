@@ -12,7 +12,7 @@ You can deploy your packaged model to your own infrastructure, or to [Replicate]
 
 - ✅ **Define the inputs and outputs for your model with standard Python.** Then, Cog generates an OpenAPI schema and validates the inputs and outputs with Pydantic.
 
-- 🎁 **Automatic HTTP prediction server**: Your model's types are used to dynamically generate a RESTful HTTP API using [FastAPI](https://fastapi.tiangolo.com/).
+- 🎁 **Automatic HTTP prediction server**: Your model's types are used to dynamically generate a RESTful HTTP API. Two runtime implementations available: FastAPI (default) and Rust/Axum (experimental, faster).
 
 - 🥞 **Automatic queue worker.** Long-running deep learning models or batch processing is best architected with a queue. Cog models do this out of the box. Redis is currently supported, with more in the pipeline.
 
@@ -57,6 +57,8 @@ class Predictor(BasePredictor):
         return postprocess(output)
 ```
 
+In the above we accept a path to the image as an input, and return a path to our transformed image after running it through our model.
+
 Now, you can run predictions on this model:
 
 ```console
@@ -76,6 +78,16 @@ $ cog build -t my-colorization-model
 $ docker run -d -p 5000:5000 --gpus all my-colorization-model
 
 $ curl http://localhost:5000/predictions -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{"input": {"image": "https://.../input.jpg"}}'
+```
+
+Or, combine build and run via the `serve` command:
+
+```console
+$ cog serve -p 8080
+
+$ curl http://localhost:8080/predictions -X POST \
     -H 'Content-Type: application/json' \
     -d '{"input": {"image": "https://.../input.jpg"}}'
 ```
@@ -125,11 +137,11 @@ You can also download and install the latest release using our
 [install script](https://cog.run/install):
 
 ```sh
-# fish shell
-sh (curl -fsSL https://cog.run/install.sh | psub)
-
 # bash, zsh, and other shells
 sh <(curl -fsSL https://cog.run/install.sh)
+
+# fish shell
+sh (curl -fsSL https://cog.run/install.sh | psub)
 
 # download with wget and run in a separate command
 wget -qO- https://cog.run/install.sh
@@ -245,6 +257,7 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Etelis"><img src="https://avatars.githubusercontent.com/u/92247226?v=4?s=100" width="100px;" alt="Itay Etelis"/><br /><sub><b>Itay Etelis</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=Etelis" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://www.wavefunction.dev"><img src="https://avatars.githubusercontent.com/u/54407820?v=4?s=100" width="100px;" alt="Gennaro Schiano"/><br /><sub><b>Gennaro Schiano</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=gschian0" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://andreknoerig.de"><img src="https://avatars.githubusercontent.com/u/481350?v=4?s=100" width="100px;" alt="André Knörig"/><br /><sub><b>André Knörig</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=aknoerig" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://condense.live"><img src="https://avatars.githubusercontent.com/u/24726?v=4?s=100" width="100px;" alt="Dan Fairs"/><br /><sub><b>Dan Fairs</b></sub></a><br /><a href="https://github.com/replicate/cog/commits?author=danfairs" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>

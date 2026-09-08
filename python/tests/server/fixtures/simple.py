@@ -4,3 +4,4 @@ class Predictor:
 
     def predict(self):
         print("did predict")
+        return "prediction output"
