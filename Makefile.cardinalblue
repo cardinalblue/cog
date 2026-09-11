@@ -1,0 +1,13 @@
+# Makefile.cardinalblue — build the CardinalBlue fork of cog as a wheel.
+#
+#     make -f Makefile.cardinalblue build
+#     make -f Makefile.cardinalblue clean
+
+.PHONY: build
+build:
+	@rm -f dist/cog-*.whl
+	uv build --wheel --out-dir=dist .
+
+.PHONY: clean
+clean:
+	rm -rf dist/cog-*.whl build python/cog.egg-info python/cog/_version.py
