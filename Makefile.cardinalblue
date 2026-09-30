@@ -4,8 +4,7 @@
 #     make -f Makefile.cardinalblue clean
 
 .PHONY: build
-build:
-	@rm -f dist/cog-*.whl
+build: clean
 	uv build --wheel --out-dir=dist .
 
 .PHONY: clean
